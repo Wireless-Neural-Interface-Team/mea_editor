@@ -1,0 +1,1632 @@
+from __future__ import annotations
+
+from collections import Counter
+
+"""
+Qt standalone editor for electrode matrices.
+
+Architecture overview
+---------------------
+- `ElectrodeView`: custom QGraphicsView for interaction + overlays.
+- `GridScene`: lightweight scene wrapper exposing dynamic X/Y axes.
+- `ElectrodeItem`: visual/interactive representation of one `Electrode`.
+- `ElectrodeMatrixEditorQt`: main window, business logic, file workflow.
+
+Coordinate convention
+---------------------
+The scene uses a Cartesian orientation (Y positive upward). Because Qt view
+coordinates are naturally Y-down, the view transform is inverted on Y.
+
+Persistence
+-----------
+All file operations are routed through `electrode_matrix_io.py`, which reads/
+writes probeinterface-compatible JSON.
+"""
+
+try:
+    from PySide6.QtCore import QPoint, QRectF, QTimer, Qt
+    from PySide6.QtGui import QAction, QBrush, QColor, QFont, QKeySequence, QPainter, QPainterPath, QPen, QTransform
+    from PySide6.QtWidgets import (
+        QApplication,
+        QComboBox,
+        QDialog,
+        QFileDialog,
+        QFormLayout,
+        QFrame,
+        QGraphicsItem,
+        QGraphicsPathItem,
+        QGraphicsScene,
+        QGraphicsSimpleTextItem,
+        QGraphicsView,
+        QHBoxLayout,
+        QLabel,
+        QLineEdit,
+        QMainWindow,
+        QMessageBox,
+        QPushButton,
+        QSizePolicy,
+        QVBoxLayout,
+        QWidget,
+    )
+except ImportError as exc:
+    raise SystemExit("PySide6 is required. Install with: pip install PySide6") from exc
+
+from electrode_matrix_dialogs import NewMatrixDialog
+from electrode_matrix_io import load_electrodes_from_file, save_electrodes_to_file
+from electrode_matrix_types import Electrode
+
+# Overlay axis band dimensions (in viewport pixels).
+AXIS_BAND_HEIGHT = 24
+AXIS_BAND_WIDTH = 52
+# Extra scene space around electrodes to allow panning/scrollbars.
+DEFAULT_SCENE_MARGIN = 100.0
+# Fit-view framing behavior.
+FIT_PADDING_MIN = 80.0
+FIT_PADDING_RATIO = 0.2
+# Min pixel distance between axis tick labels to avoid overlap.
+GRID_MIN_LABEL_SPACING_PX = 44
+
+
+class ElectrodeView(QGraphicsView):
+    """
+    Interactive viewport for the electrode scene.
+
+    Responsibilities:
+    - pan/zoom behavior and mouse interactions,
+    - add-mode click handling,
+    - drawing dynamic grid/axis overlays.
+    """
+
+    def __init__(self, scene: QGraphicsScene) -> None:
+        """
+        Initialize the graphics view for the electrode scene.
+
+        Args:
+            scene: Qt scene containing items (electrodes, grid).
+        """
+        super().__init__(scene)
+        # Antialiasing improves circle and text rendering quality.
+        self.setRenderHint(QPainter.Antialiasing, True)
+        self.setFrameShape(QFrame.NoFrame)
+        # Keep content centered when viewport is larger than scene.
+        self.setAlignment(Qt.AlignCenter)
+        # Rubber-band drag enables box selection on empty area.
+        self.setDragMode(QGraphicsView.RubberBandDrag)
+        # Limit repaint to changed regions for better performance.
+        self.setViewportUpdateMode(QGraphicsView.BoundingRectViewportUpdate)
+        self.setBackgroundBrush(QColor("#11151a"))
+        # Cartesian orientation for scene coordinates: Y grows upward.
+        # Qt view Y is naturally downward; scale(1,-1) flips it.
+        self.scale(1.0, -1.0)
+        self._interaction_begin = lambda: None
+        self._interaction_end = lambda: None
+        self._is_add_mode = lambda: False
+        self._add_electrode_at = lambda x, y: None
+        self._on_delete = lambda: None
+        self._on_view_transform_changed = lambda: None
+
+    def set_interaction_callbacks(self, on_begin, on_end) -> None:
+        """
+        Register callbacks for the start and end of a drag interaction.
+
+        These callbacks capture state before/after a move for undo/redo.
+
+        Args:
+            on_begin: Function called on mousePress (capture snapshot).
+            on_end: Function called on mouseRelease (commit if changed).
+        """
+        self._interaction_begin = on_begin
+        self._interaction_end = on_end
+
+    def set_add_callbacks(self, is_add_mode, add_electrode_at) -> None:
+        """
+        Register callbacks for add-electrode mode.
+
+        Args:
+            is_add_mode: Function returning True if add mode is active.
+            add_electrode_at: Function(x, y) creating an electrode at the given position.
+        """
+        self._is_add_mode = is_add_mode
+        self._add_electrode_at = add_electrode_at
+
+    def set_delete_callback(self, on_delete) -> None:
+        """
+        Register callback for delete-selected action (Suppr/Backspace).
+        """
+        self._on_delete = on_delete
+
+    def set_view_transform_changed_callback(self, on_changed) -> None:
+        """
+        Register callback when view zoom/pan changes (for label layout refresh).
+        """
+        self._on_view_transform_changed = on_changed
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        """
+        Handle mouse click: add mode or start interaction for undo.
+        """
+        # Left button only.
+        if event.button() == Qt.LeftButton:
+            # In add mode, left-click creates an electrode at cursor position.
+            if self._is_add_mode():
+                scene_pos = self.mapToScene(event.pos())
+                self._add_electrode_at(scene_pos.x(), scene_pos.y())
+                event.accept()
+                return
+            # Otherwise, record state for potential undo on drag end.
+            self._interaction_begin()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
+        """
+        On click release, finalize interaction (commit undo if needed).
+        """
+        super().mouseReleaseEvent(event)
+        if event.button() == Qt.LeftButton:
+            # Commit undo snapshot if something changed during drag.
+            self._interaction_end()
+
+    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        """
+        Handle Suppr/Backspace to delete selected electrodes when view has focus.
+        """
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            self._on_delete()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def wheelEvent(self, event) -> None:  # type: ignore[override]
+        """
+        Zoom centered on cursor: the point under the mouse stays fixed.
+
+        Store scene point under cursor, apply scale, then adjust scrollbars
+        so that point remains under the cursor.
+        """
+        # event.position() is Qt6; event.pos() fallback for older APIs.
+        try:
+            mouse_pos = event.position().toPoint()
+        except AttributeError:
+            mouse_pos = event.pos()
+
+        # Remember which scene point is under the cursor before scaling.
+        scene_pos_before = self.mapToScene(mouse_pos)
+        factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
+        self.scale(factor, factor)
+
+        # After scale, that scene point moved in viewport; adjust scrollbars
+        # so it stays under the cursor (zoom appears centered on mouse).
+        viewport_pos_after = self.mapFromScene(scene_pos_before)
+        delta_view = viewport_pos_after - mouse_pos
+        self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + delta_view.x())
+        self.verticalScrollBar().setValue(self.verticalScrollBar().value() + delta_view.y())
+
+        # Labels use ItemIgnoresTransformations; refresh their layout for new scale.
+        self._on_view_transform_changed()
+
+    def scrollContentsBy(self, dx: int, dy: int) -> None:  # type: ignore[override]
+        """
+        Force overlay repaint when panning with scrollbars.
+
+        Without this, axis bands would stay fixed during scroll.
+        """
+        super().scrollContentsBy(dx, dy)
+        scene = self.scene()
+        if scene is not None:
+            scene.invalidate(
+                scene.sceneRect(),
+                QGraphicsScene.BackgroundLayer | QGraphicsScene.ForegroundLayer,
+            )
+        self.viewport().update()
+
+    def drawBackground(self, painter: QPainter, rect) -> None:  # type: ignore[override]
+        """
+        Draw grid lines in scene coordinates.
+
+        X/Y positions come from electrodes via scene.get_axes().
+        Vertical lines follow X values, horizontal lines follow Y values.
+        """
+        super().drawBackground(painter, rect)
+        scene = self.scene()
+        if scene is None or not hasattr(scene, "get_axes"):
+            return
+        # Axes come from unique electrode X/Y; grid follows electrode layout.
+        xs, ys = scene.get_axes()  # type: ignore[attr-defined]
+        if not xs and not ys:
+            return
+        grid_pen = QPen(QColor("#3b4f66"))
+        grid_pen.setWidthF(0)  # Cosmetic width: 1 logical pixel.
+        painter.setPen(grid_pen)
+        for x in xs:
+            painter.drawLine(x, rect.top(), x, rect.bottom())
+        for y in ys:
+            painter.drawLine(rect.left(), y, rect.right(), y)
+
+    def drawForeground(self, painter: QPainter, rect) -> None:  # type: ignore[override]
+        """
+        Draw fixed overlays (axis bands + numeric ticks).
+
+        In viewport coordinates to stay fixed on screen during zoom/pan.
+        """
+        super().drawForeground(painter, rect)
+        scene = self.scene()
+        if scene is None or not hasattr(scene, "get_axes"):
+            return
+
+        xs, ys = scene.get_axes()  # type: ignore[attr-defined]
+        if not xs and not ys:
+            return
+
+        painter.save()
+        # Draw overlays in viewport coordinates (fixed on screen).
+        painter.resetTransform()
+
+        vp = self.viewport().rect()
+        axis_h = AXIS_BAND_HEIGHT
+        axis_w = AXIS_BAND_WIDTH
+
+        # Dark bands for axis labels (top horizontal, left vertical).
+        painter.fillRect(0, 0, vp.width(), axis_h, QColor("#0f1318"))
+        painter.fillRect(0, 0, axis_w, vp.height(), QColor("#0f1318"))
+
+        # Separator lines between axis bands and plot area.
+        sep_pen = QPen(QColor("#3b4f66"))
+        painter.setPen(sep_pen)
+        painter.drawLine(axis_w, 0, axis_w, vp.height())
+        painter.drawLine(0, axis_h, vp.width(), axis_h)
+
+        # Axis labels: Y bottom-left, X top-left of plot area.
+        painter.setPen(QColor("#9fb3c8"))
+        baseline_y = vp.height() - 8
+        painter.drawText(6, baseline_y, "Y")
+        painter.drawText(axis_w + 6, 16, "X")
+
+        # X ticks: skip if outside visible area or too close to previous label.
+        min_px_spacing = GRID_MIN_LABEL_SPACING_PX
+        last_x_px = -10_000
+        for x in xs:
+            px = self.mapFromScene(x, 0).x()
+            if px < axis_w or px > vp.width() - 2:
+                continue
+            if px - last_x_px < min_px_spacing:
+                continue
+            last_x_px = px
+            painter.setPen(QColor("#6e88a5"))
+            painter.drawLine(px, axis_h - 6, px, axis_h)
+            painter.setPen(QColor("#d3dbe4"))
+            painter.drawText(px + 3, 16, f"{x:.1f}")
+
+        # Y ticks: same logic; abs() needed because Y may increase upward or down.
+        last_y_px = -10_000
+        for y in ys:
+            py = self.mapFromScene(0, y).y()
+            if py < axis_h or py > vp.height() - 2:
+                continue
+            if abs(py - last_y_px) < min_px_spacing:
+                continue
+            last_y_px = py
+            painter.setPen(QColor("#6e88a5"))
+            painter.drawLine(axis_w - 6, py, axis_w, py)
+            painter.setPen(QColor("#d3dbe4"))
+            painter.drawText(4, py - 3, f"{y:.1f}")
+
+        painter.restore()
+
+
+class GridScene(QGraphicsScene):
+    """
+    Qt scene wrapper exposing dynamic axis coordinates.
+
+    Axes (X/Y) are provided by an external callback, typically derived
+    from electrode positions for grid and tick labels.
+    """
+
+    def __init__(self, parent=None) -> None:
+        """Initialize scene with default axes provider (empty lists)."""
+        super().__init__(parent)
+        # Default: no axes (empty lists).
+        self._axes_provider = lambda: ([], [])
+
+    def set_axes_provider(self, provider) -> None:
+        """
+        Set the callback that provides axis values.
+
+        Args:
+            provider: No-arg function returning (x_list, y_list).
+        """
+        self._axes_provider = provider
+
+    def get_axes(self) -> tuple[list[float], list[float]]:
+        """
+        Return current X/Y coordinates for grid and axes.
+
+        Returns:
+            (xs, ys): sorted lists of unique abscissas and ordinates.
+        """
+        return self._axes_provider()
+
+
+class ElectrodeItem(QGraphicsPathItem):
+    """
+    Interactive graphics item bound to one `Electrode` model.
+
+    It owns:
+    - circular shape path,
+    - center label (`channel_index`),
+    - bottom label (`contact_id`).
+    """
+
+    def __init__(self, model: Electrode, on_change, on_selection_change) -> None:
+        super().__init__()
+        self.model = model
+        self._on_change = on_change
+        self._on_selection_change = on_selection_change
+        # ItemSendsGeometryChanges required for ItemPositionHasChanged in itemChange.
+        self.setFlags(
+            QGraphicsItem.ItemIsSelectable
+            | QGraphicsItem.ItemIsMovable
+            | QGraphicsItem.ItemSendsGeometryChanges
+        )
+        self.setZValue(10)  # Above grid lines.
+
+        # Labels must exist before set_radius() (which calls _layout_labels).
+        # ItemIgnoresTransformations keeps text at constant screen size when zooming.
+        label_font = QFont()
+        label_font.setPointSize(9)
+        self.label = QGraphicsSimpleTextItem(str(model.channel_index), self)
+        self.label.setBrush(QBrush(QColor("#e9edf2")))
+        self.label.setFont(label_font)
+        self.label.setTransform(QTransform.fromScale(1.0, 1.0))  # Readable in Cartesian Y.
+        self.label.setFlag(QGraphicsItem.ItemIgnoresTransformations)
+        self.contact_label = QGraphicsSimpleTextItem(str(model.contact_id), self)
+        self.contact_label.setBrush(QBrush(QColor("#d3dbe4")))
+        self.contact_label.setFont(label_font)
+        self.contact_label.setTransform(QTransform.fromScale(1.0, 1.0))
+        self.contact_label.setFlag(QGraphicsItem.ItemIgnoresTransformations)
+        self.set_radius(model.radius)
+        self.setPos(model.x, model.y)
+        self._layout_labels()
+        self._refresh_style()
+
+    def _refresh_label(self) -> None:
+        """
+        Sync label text from model and reposition labels.
+
+        Updates channel_index (center) and contact_id (below circle).
+        """
+        self.label.setText(str(self.model.channel_index))
+        self.contact_label.setText(str(self.model.contact_id))
+        self._layout_labels()
+
+    def _view_scale(self) -> float:
+        """
+        Get the view's scale factor (scene units per pixel) for label positioning.
+        With ItemIgnoresTransformations, label dimensions are in pixels; we need
+        to convert to scene units for correct positioning at any zoom level.
+        """
+        scene = self.scene()
+        if scene is None:
+            return 1.0
+        views = scene.views()
+        if not views:
+            return 1.0
+        t = views[0].transform()
+        scale = abs(t.m11()) if t.m11() != 0 else 1.0
+        return max(scale, 1e-6)  # Avoid division by zero
+
+    def _layout_labels(self) -> None:
+        """
+        Position labels: channel_index at center, contact_id below circle.
+
+        With ItemIgnoresTransformations, label bounding rects are in pixels;
+        we convert to scene units using the view scale for correct placement.
+        """
+        scale = self._view_scale()
+        # Channel index centered inside electrode (item coords: center at origin).
+        br = self.label.boundingRect()
+        # Convert pixel dimensions to scene units: scene = pixels / scale
+        label_w, label_h = br.width() / scale, br.height() / scale
+        self.label.setPos(-label_w / 2, label_h / 2)
+        # contact_id displayed below each electrode with small gap.
+        cbr = self.contact_label.boundingRect()
+        contact_h = cbr.height() / scale
+        y_offset = self.model.radius + contact_h + 4.0
+        contact_w = cbr.width() / scale
+        self.contact_label.setPos(-contact_w / 2, y_offset)
+
+    def set_radius(self, radius: float) -> None:
+        """
+        Update model radius and path geometry (ellipse).
+        """
+        self.model.radius = radius
+        path = QPainterPath()
+        # Ellipse centered at item origin (0,0).
+        path.addEllipse(-radius, -radius, 2 * radius, 2 * radius)
+        self.setPath(path)
+        # Guard: labels may not exist during early init.
+        if hasattr(self, "label") and hasattr(self, "contact_label"):
+            self._layout_labels()
+
+    def _refresh_style(self) -> None:
+        """
+        Apply fill and outline colors based on state.
+
+        Priority: duplicate (red) > selected (yellow) > enabled (blue) > disabled (gray).
+        """
+        # Duplicate state overrides selection and enabled for visibility.
+        is_duplicate = self.model.has_channel_duplicate or self.model.has_contact_duplicate
+        if is_duplicate:
+            fill = QColor("#d44b4b")
+            outline = QColor("#ffe0e0")
+        elif self.isSelected():
+            fill = QColor("#ffd447")
+            outline = QColor("#f6f7f8")
+        elif self.model.enabled:
+            fill = QColor("#3da5ff")
+            outline = QColor("#232b35")
+        else:
+            fill = QColor("#4f5761")
+            outline = QColor("#232b35")
+        self.setBrush(QBrush(fill))
+        self.setPen(QPen(outline, 2))
+
+    def itemChange(self, change, value):  # type: ignore[override]
+        """
+        Qt callback fired on item state/geometry changes.
+
+        - ItemPositionHasChanged: copy x/y to model, notify controller.
+        - ItemSelectedHasChanged: refresh style and side panel.
+        """
+        if change == QGraphicsItem.ItemPositionHasChanged:
+            p = self.pos()
+            self.model.x = p.x()
+            self.model.y = p.y()
+            self._on_change()
+        elif change == QGraphicsItem.ItemSelectedHasChanged:
+            self._refresh_style()
+            self._on_selection_change()
+        return super().itemChange(change, value)
+
+    def sync_from_model(self) -> None:
+        """
+        Apply model state to visual item.
+
+        Updates: position, radius, label text, colors.
+        """
+        self.setPos(self.model.x, self.model.y)
+        self.set_radius(self.model.radius)
+        self._refresh_label()
+        self._refresh_style()
+
+
+class ElectrodeMatrixEditorQt(QMainWindow):
+    """
+    Main application window orchestrating UI, state, and file workflow.
+
+    This class is the controller layer:
+    - keeps canonical electrode dictionary,
+    - updates scene items,
+    - handles commands (edit/move/save/open/undo/redo).
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("Electrode Matrix Editor (Qt Standalone)")
+        self.resize(1280, 800)
+        self.current_file_path: str | None = None
+        self.is_dirty = False
+        self.si_units = "um"
+        self.is_add_mode = False
+
+        # Canonical electrode models keyed by eid.
+        self.electrodes: dict[int, Electrode] = {}
+        # Scene items keyed by same eid for sync.
+        self.items: dict[int, ElectrodeItem] = {}
+        # Undo/redo: full snapshots of (x, y, radius, enabled, channel_index, contact_id, ...).
+        self.undo_stack: list[
+            dict[int, tuple[float, float, float, bool, int, str, tuple[float, float, float, float], str, str]]
+        ] = []
+        self.redo_stack: list[
+            dict[int, tuple[float, float, float, bool, int, str, tuple[float, float, float, float], str, str]]
+        ] = []
+        self._max_history = 200
+        self._is_restoring_state = False
+        # Snapshot taken at mouse press; committed on release if changed.
+        self._interaction_snapshot: (
+            dict[int, tuple[float, float, float, bool, int, str, tuple[float, float, float, float], str, str]]
+            | None
+        ) = None
+
+        self.scene = GridScene(self)
+        self.scene.set_axes_provider(self._grid_axes)
+        self.scene.selectionChanged.connect(self._refresh_panel_values)
+        self.view = ElectrodeView(self.scene)
+        self.view.set_interaction_callbacks(self._on_interaction_begin, self._on_interaction_end)
+        self.view.set_add_callbacks(lambda: self.is_add_mode, self._add_electrode_at)
+        self.view.set_delete_callback(self._delete_selected)
+        self.view.set_view_transform_changed_callback(self._refresh_label_layouts)
+
+        self._build_ui()
+        self._build_menu()
+        self._startup_done = False
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        """
+        Prompt to save before closing if there are unsaved changes.
+        """
+        if self.electrodes and self.is_dirty:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Unsaved changes")
+            msg.setText("The current matrix has unsaved changes.")
+            msg.setInformativeText("Do you want to save before closing?")
+            save_btn = msg.addButton("Save", QMessageBox.AcceptRole)
+            discard_btn = msg.addButton("Discard", QMessageBox.DestructiveRole)
+            cancel_btn = msg.addButton(QMessageBox.Cancel)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked == save_btn:
+                if self._save_current_matrix(show_success=False):
+                    event.accept()
+                else:
+                    event.ignore()
+            elif clicked == discard_btn:
+                event.accept()
+            else:
+                event.ignore()
+        else:
+            event.accept()
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        """
+        On first show: run startup workflow, then fit view once viewport is sized.
+        """
+        super().showEvent(event)
+        if not self._startup_done:
+            self._startup_done = True
+            QTimer.singleShot(0, self._startup_workflow)
+        else:
+            QTimer.singleShot(0, self._fit_view)
+
+    def _build_ui(self) -> None:
+        """
+        Build interface: view on left, side panel on right.
+
+        Panel contains: selection, si_units, edit fields, move, tools
+        (add, toggle enabled, fit), help.
+        """
+        # Central widget and horizontal layout (view | panel).
+        central = QWidget(self)
+        self.setCentralWidget(central)
+        layout = QHBoxLayout(central)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        # View on left, stretch 4 to take most space.
+        self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout.addWidget(self.view, stretch=4)
+
+        # Right side panel, stretch 1.
+        panel = QWidget()
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+        panel_layout.setSpacing(8)
+        layout.addWidget(panel, stretch=1)
+
+        # Selection block: selected count + si_units.
+        sel_box = QFrame()
+        sel_box.setFrameShape(QFrame.StyledPanel)
+        sel_form = QFormLayout(sel_box)
+        self.selected_count_label = QLabel("0")
+        self.si_units_edit = QLineEdit(self.si_units)
+        b_units = QPushButton("Apply si_units")
+        b_units.clicked.connect(self._apply_si_units)
+        units_row = QWidget()
+        units_layout = QHBoxLayout(units_row)
+        units_layout.setContentsMargins(0, 0, 0, 0)
+        units_layout.setSpacing(4)
+        units_layout.addWidget(self.si_units_edit)
+        units_layout.addWidget(b_units)
+        sel_form.addRow("Selected", self.selected_count_label)
+        sel_form.addRow("si_units", units_row)
+        panel_layout.addWidget(sel_box)
+
+        # Edit block: radius, X/Y, channel, contact_id, plane_axis, shank, shape.
+        edit_box = QFrame()
+        edit_box.setFrameShape(QFrame.StyledPanel)
+        e_form = QFormLayout(edit_box)
+        self.radius_edit = QLineEdit("")
+        self.x_edit = QLineEdit("")
+        self.y_edit = QLineEdit("")
+        self.channel_index_edit = QLineEdit("")
+        self.contact_id_edit = QLineEdit("")
+        self.contact_plane_axis_edit = QLineEdit("")
+        self.shank_id_edit = QLineEdit("")
+        self.shape_combo = QComboBox()
+        self.shape_combo.addItems(["circle"])
+        self.dx_edit = QLineEdit("0")
+        self.dy_edit = QLineEdit("0")
+
+        b_radius = QPushButton("Apply Radius")
+        b_radius.clicked.connect(self._apply_radius)
+        b_xy = QPushButton("Apply X/Y")
+        b_xy.clicked.connect(self._apply_xy_single)
+        b_channel = QPushButton("Apply Channel")
+        b_channel.clicked.connect(self._apply_channel_index)
+        b_contact = QPushButton("Apply Contact ID")
+        b_contact.clicked.connect(self._apply_contact_id)
+        b_plane = QPushButton("Apply Contact Plane Axis")
+        b_plane.clicked.connect(self._apply_contact_plane_axis)
+        b_shank = QPushButton("Apply Shank ID")
+        b_shank.clicked.connect(self._apply_shank_id)
+        b_shape = QPushButton("Apply Shape")
+        b_shape.clicked.connect(self._apply_shape)
+
+        def make_row(*widgets):
+            """Compact helper to place multiple widgets on one form row (edit + button)."""
+            row = QWidget()
+            lo = QHBoxLayout(row)
+            lo.setContentsMargins(0, 0, 0, 0)
+            lo.setSpacing(4)
+            for w in widgets:
+                lo.addWidget(w)
+            return row
+
+        e_form.addRow("Radius", make_row(self.radius_edit, b_radius))
+        e_form.addRow("X/Y (single)", make_row(self.x_edit, self.y_edit, b_xy))
+        e_form.addRow("Channel index", make_row(self.channel_index_edit, b_channel))
+        e_form.addRow("Contact ID", make_row(self.contact_id_edit, b_contact))
+        e_form.addRow("Contact plane axis", make_row(self.contact_plane_axis_edit, b_plane))
+        e_form.addRow("Shank ID", make_row(self.shank_id_edit, b_shank))
+        e_form.addRow("Shape", make_row(self.shape_combo, b_shape))
+        panel_layout.addWidget(edit_box)
+
+        # Move block: dX, dY to move selection.
+        move_box = QFrame()
+        move_box.setFrameShape(QFrame.StyledPanel)
+        move_form = QFormLayout(move_box)
+        b_move = QPushButton("Move Selection dX/dY")
+        b_move.clicked.connect(self._move_selection_by_delta)
+        move_form.addRow("dX (group)", self.dx_edit)
+        move_form.addRow("dY (group)", self.dy_edit)
+        move_form.addRow(b_move)
+        panel_layout.addWidget(move_box)
+
+        # Tools block: add electrode, toggle enabled, fit view.
+        tools_box = QFrame()
+        tools_box.setFrameShape(QFrame.StyledPanel)
+        t_form = QFormLayout(tools_box)
+        self.b_add_electrode = QPushButton("Add Electrode")
+        self.b_add_electrode.setCheckable(True)
+        self.b_add_electrode.toggled.connect(self._set_add_mode)
+        b_delete = QPushButton("Delete Selected Electrode")
+        b_delete.clicked.connect(self._delete_selected)
+        b_toggle = QPushButton("Toggle Enabled")
+        b_toggle.clicked.connect(self._toggle_enabled)
+        b_fit = QPushButton("Fit View")
+        b_fit.clicked.connect(self._fit_view)
+        t_form.addRow(self.b_add_electrode)
+        t_form.addRow(b_delete)
+        t_form.addRow(b_toggle)
+        t_form.addRow(b_fit)
+        panel_layout.addWidget(tools_box)
+
+        help_label = QLabel(
+            "Click: select one\n"
+            "Ctrl+Click: add/remove from selection\n"
+            "Drag empty area: box selection\n"
+            "Drag selected electrode: move group\n"
+            "Suppr/Backspace: delete selected\n"
+            "Wheel: zoom"
+        )
+        help_label.setWordWrap(True)
+        panel_layout.addWidget(help_label)
+        panel_layout.addStretch(1)
+
+    def _build_menu(self) -> None:
+        """
+        Create File menu with New, Open, Save, Save As.
+
+        Each action is connected to its handler and keyboard shortcut.
+        """
+        file_menu = self.menuBar().addMenu("File")
+        act_new = QAction("New array...", self)
+        act_new.setShortcut(QKeySequence.New)
+        act_new.triggered.connect(self._create_new_matrix_interactive)
+        file_menu.addAction(act_new)
+
+        act_open = QAction("Open...", self)
+        act_open.setShortcut(QKeySequence.Open)
+        act_open.triggered.connect(self._menu_open_matrix)
+        file_menu.addAction(act_open)
+
+        act_save = QAction("Save", self)
+        act_save.setShortcut(QKeySequence.Save)
+        act_save.triggered.connect(self._menu_save_matrix)
+        file_menu.addAction(act_save)
+
+        act_save_as = QAction("Save As...", self)
+        act_save_as.setShortcut(QKeySequence.SaveAs)
+        act_save_as.triggered.connect(self._menu_save_matrix_as)
+        file_menu.addAction(act_save_as)
+
+    def _selected_items(self) -> list[ElectrodeItem]:
+        """
+        Return currently selected items, filtered to ElectrodeItem.
+
+        Returns:
+            List of selected ElectrodeItem (excludes other item types).
+        """
+        return [it for it in self.scene.selectedItems() if isinstance(it, ElectrodeItem)]
+
+    def _grid_axes(self) -> tuple[list[float], list[float]]:
+        """
+        Return sorted unique X/Y coordinates for grid and axes.
+
+        Returns:
+            (xs, ys): lists of electrode abscissas and ordinates.
+        """
+        # Round to avoid near-duplicate grid lines from float noise.
+        xs = sorted({round(model.x, 6) for model in self.electrodes.values()})
+        ys = sorted({round(model.y, 6) for model in self.electrodes.values()})
+        return xs, ys
+
+    def _electrode_bounds_rect(self, margin: float = 0.0) -> QRectF:
+        """
+        Compute bounding rect of all electrodes (center + radius).
+
+        Args:
+            margin: Optional margin added on each side.
+
+        Returns:
+            QRectF enclosing all circles, or default rect if empty.
+        """
+        if not self.electrodes:
+            return QRectF(-1.0, -1.0, 2.0, 2.0)  # Fallback for empty scene.
+        min_x = min(model.x - model.radius for model in self.electrodes.values())
+        max_x = max(model.x + model.radius for model in self.electrodes.values())
+        min_y = min(model.y - model.radius for model in self.electrodes.values())
+        max_y = max(model.y + model.radius for model in self.electrodes.values())
+        rect = QRectF(min_x, min_y, max(max_x - min_x, 1.0), max(max_y - min_y, 1.0))
+        if margin > 0:
+            rect = rect.adjusted(-margin, -margin, margin, margin)
+        return rect
+
+    def _capture_state(
+        self,
+    ) -> dict[int, tuple[float, float, float, bool, int, str, tuple[float, float, float, float], str, str]]:
+        """
+        Capture full state snapshot for undo/redo.
+
+        Returns:
+            Dict eid -> (x, y, radius, enabled, channel_index, contact_id,
+                         contact_plane_axis, shank_id, shape).
+        """
+        return {
+            eid: (
+                m.x,
+                m.y,
+                m.radius,
+                m.enabled,
+                m.channel_index,
+                m.contact_id,
+                m.contact_plane_axis,
+                m.shank_id,
+                m.shape,
+            )
+            for eid, m in self.electrodes.items()
+        }
+
+    def _set_electrodes(self, models: list[Electrode]) -> None:
+        """
+        Replace entire scene content with the given model list.
+
+        Clears scene, recreates items, updates electrodes/items,
+        sceneRect, duplicate flags, panel and title.
+        """
+        self.scene.clear()
+        self.electrodes.clear()
+        self.items.clear()
+        for model in models:
+            # on_change: refresh panel + overlays; on_selection: refresh panel.
+            item = ElectrodeItem(model, self._on_scene_visuals_changed, self._refresh_panel_values)
+            self.scene.addItem(item)
+            self.electrodes[model.eid] = model
+            self.items[model.eid] = item
+        # Expand scene rect so user can pan/scroll in margins.
+        self.scene.setSceneRect(self._electrode_bounds_rect(margin=DEFAULT_SCENE_MARGIN))
+        self._update_duplicate_flags()
+        self._refresh_panel_values()
+        self.si_units_edit.setText(self.si_units)
+        self._update_title()
+        # Defer label layout so view has updated after scene change (add/delete).
+        QTimer.singleShot(0, self._refresh_label_layouts)
+    
+    def _set_add_mode(self, enabled: bool) -> None:
+        """
+        Toggle one-click electrode creation mode.
+
+        Change button text and cursor (cross when active).
+        """
+        self.is_add_mode = enabled
+        if enabled:
+            self.b_add_electrode.setText("Stop Adding")
+            self.view.viewport().setCursor(Qt.CrossCursor)
+        else:
+            self.b_add_electrode.setText("Add Electrode")
+            self.view.viewport().unsetCursor()
+
+    def _add_electrode_at(self, x: float, y: float) -> None:
+        """
+        Create a new electrode at (x, y) and select it.
+
+        Uses next available eid, default contact_id "A-000".
+        """
+        before = self._capture_state()
+        next_eid = max(self.electrodes.keys(), default=-1) + 1  # Unique id.
+        model = Electrode(eid=next_eid, x=x, y=y, channel_index=next_eid, contact_id="A-000")
+        models = list(self.electrodes.values()) + [model]
+        self._set_electrodes(models)
+        self.scene.clearSelection()
+        if next_eid in self.items:
+            self.items[next_eid].setSelected(True)
+        self._commit_if_changed(before)
+
+    def _apply_si_units(self) -> None:
+        """
+        Apply distance unit (si_units) at matrix level.
+
+        Reads from panel field, validates, updates and marks dirty.
+        """
+        units = self.si_units_edit.text().strip()
+        if not units:
+            QMessageBox.information(self, "No values", "Fill si_units before applying.")
+            self.si_units_edit.setText(self.si_units)
+            return
+        if units == self.si_units:
+            return
+        self.si_units = units
+        self.si_units_edit.setText(self.si_units)
+        self.is_dirty = True
+        self._update_title()
+
+    def _update_title(self) -> None:
+        """
+        Update window title with file path and asterisk if modified.
+        """
+        dirty_suffix = " *" if self.is_dirty else ""
+        if self.current_file_path:
+            self.setWindowTitle(f"Electrode Matrix Editor (Qt Standalone) - {self.current_file_path}{dirty_suffix}")
+        else:
+            self.setWindowTitle(f"Electrode Matrix Editor (Qt Standalone){dirty_suffix}")
+
+    def _startup_workflow(self) -> None:
+        """
+        On startup, show dialog: open or create matrix.
+
+        If user cancels or fails to open/create, close application.
+        Called after main window is shown so it appears as a proper window.
+        """
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Electrode Matrix Editor")
+        msg.setText("Choose how to start:")
+        open_btn = msg.addButton("Open existing matrix", QMessageBox.AcceptRole)
+        new_btn = msg.addButton("Create new matrix", QMessageBox.ActionRole)
+        cancel_btn = msg.addButton(QMessageBox.Cancel)
+        msg.exec()
+        clicked = msg.clickedButton()
+        if clicked == open_btn:
+            loaded = self._prompt_open_matrix_file()
+            if not loaded:
+                if not self._prompt_new_matrix_parameters():
+                    self.close()
+        elif clicked == new_btn:
+            if not self._prompt_new_matrix_parameters():
+                self.close()
+        else:
+            self.close()
+
+    def _prompt_new_matrix_parameters(self) -> bool:
+        """
+        Open new-matrix dialog and generate grid if accepted.
+
+        Returns:
+            True if grid was created, False if cancelled.
+        """
+        dialog = NewMatrixDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return False
+        rows, cols, pitch, units = dialog.values()
+        self.si_units = units
+        self._generate_aligned_grid(rows, cols, pitch)
+        self.current_file_path = None
+        self.is_dirty = True
+        self._update_title()
+        self._fit_view()
+        self.raise_()
+        self.activateWindow()
+        return True
+
+    def _prompt_open_matrix_file(self) -> bool:
+        """
+        Prompt for JSON path via dialog and load matrix.
+
+        Returns:
+            True if loaded successfully, False if cancelled or error.
+        """
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open matrix JSON",
+            "",
+            "JSON files (*.json);;All files (*.*)",
+        )
+        if not path:
+            return False
+        try:
+            self._load_matrix_from_file(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Load error", f"Could not load file:\n{exc}")
+            return False
+        self.current_file_path = path
+        self.is_dirty = False
+        self._update_title()
+        self._fit_view()
+        self.raise_()
+        self.activateWindow()
+        return True
+
+    def _menu_open_matrix(self) -> None:
+        """Menu handler for Open action with unsaved-work protection."""
+        if self._confirm_before_replace("open a matrix"):
+            self._prompt_open_matrix_file()
+
+    def _menu_save_matrix(self) -> None:
+        """Menu handler for Save."""
+        self._save_current_matrix(show_success=True)
+
+    def _menu_save_matrix_as(self) -> None:
+        """Menu handler for Save As."""
+        self._save_current_matrix_as(show_success=True)
+
+    def _save_current_matrix(self, show_success: bool = False) -> bool:
+        """
+        Save to current path. If no path, open Save As dialog.
+
+        Args:
+            show_success: Show success message after save.
+
+        Returns:
+            True if saved, False otherwise.
+        """
+        if not self.electrodes:
+            QMessageBox.information(self, "Save matrix", "No matrix to save.")
+            return False
+        if not self.current_file_path:
+            return self._save_current_matrix_as(show_success=show_success)
+        try:
+            self._save_matrix_to_file(self.current_file_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Save error", f"Could not save file:\n{exc}")
+            return False
+        self.is_dirty = False
+        self._update_title()
+        if show_success:
+            QMessageBox.information(self, "Save matrix", "Matrix saved successfully.")
+        return True
+
+    def _save_current_matrix_as(self, show_success: bool = False) -> bool:
+        """
+        Save with explicit file selection dialog.
+
+        Returns:
+            True if saved, False if cancelled or error.
+        """
+        if not self.electrodes:
+            QMessageBox.information(self, "Save matrix", "No matrix to save.")
+            return False
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save matrix JSON",
+            self.current_file_path or "",
+            "JSON files (*.json);;All files (*.*)",
+        )
+        if not path:
+            return False
+        try:
+            self._save_matrix_to_file(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Save error", f"Could not save file:\n{exc}")
+            return False
+        self.current_file_path = path
+        self.is_dirty = False
+        self._update_title()
+        if show_success:
+            QMessageBox.information(self, "Save matrix", "Matrix saved successfully.")
+        return True
+
+    def _confirm_before_replace(self, action_label: str) -> bool:
+        """
+        Prompt save/discard/cancel before replacing content.
+
+        Returns:
+            True if user confirmed; False to abort.
+        """
+        if self.electrodes and self.is_dirty:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Unsaved changes")
+            msg.setText("The current matrix has unsaved changes.")
+            msg.setInformativeText("Do you want to save before continuing?")
+            save_btn = msg.addButton("Save", QMessageBox.AcceptRole)
+            discard_btn = msg.addButton("Discard", QMessageBox.DestructiveRole)
+            cancel_btn = msg.addButton(QMessageBox.Cancel)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked == save_btn:
+                if not self._save_current_matrix(show_success=False):
+                    return False
+            elif clicked == discard_btn:
+                pass
+            elif clicked == cancel_btn:
+                return False
+            else:
+                return False
+
+        # If matrix not empty, ask for replacement confirmation.
+        if self.electrodes:
+            confirm = QMessageBox.question(
+                self,
+                "Confirm action",
+                f"Are you sure you want to {action_label}?\nThe current matrix will be replaced.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if confirm != QMessageBox.Yes:
+                return False
+        return True
+
+    def _save_matrix_to_file(self, path: str) -> None:
+        """
+        Persist current models via electrode_matrix_io (probeinterface format).
+        """
+        save_electrodes_to_file(path, list(self.electrodes.values()), self.si_units)
+
+    def _load_matrix_from_file(self, path: str) -> None:
+        """
+        Load models from file and update si_units in memory.
+        """
+        models, units = load_electrodes_from_file(path)
+        self.si_units = units
+        self._set_electrodes(models)
+
+    def _update_duplicate_flags(self) -> tuple[list[int], list[str], int]:
+        """
+        Recompute duplicate flags (channel_index, contact_id) and refresh colors.
+
+        Returns:
+            (duplicate_channels, duplicate_contacts, empty_contact_count).
+        """
+        # Count channel_index and contact_id to detect duplicates.
+        channel_counts = Counter(model.channel_index for model in self.electrodes.values())
+        contact_counts = Counter(model.contact_id for model in self.electrodes.values())
+        duplicate_channels = sorted(value for value, count in channel_counts.items() if count > 1)
+        # Ignore empty contact_id in duplicate highlighting.
+        duplicate_contacts = sorted(v for v, c in contact_counts.items() if c > 1 and v.strip() != "")
+        empty_contact_count = contact_counts.get("", 0)
+        dup_channel_set = set(duplicate_channels)
+        dup_contact_set = set(duplicate_contacts)
+        # Mark each model according to whether it is a duplicate.
+        for model in self.electrodes.values():
+            model.has_channel_duplicate = model.channel_index in dup_channel_set
+            model.has_contact_duplicate = model.contact_id in dup_contact_set
+        for item in self.items.values():
+            item._refresh_style()
+        return duplicate_channels, duplicate_contacts, empty_contact_count
+
+    def _states_equal(self, a, b) -> bool:
+        """
+        Compare two snapshots with tolerance on floats.
+
+        Args:
+            a, b: Dicts eid -> state tuple.
+
+        Returns:
+            True if states equivalent (same keys, close values).
+        """
+        if a.keys() != b.keys():
+            return False
+        tol = 1e-9
+        for eid in a:
+            # Compare each field; tolerance on x, y, radius, contact_plane_axis.
+            ax, ay, ar, ae, ac, aid, aplane, ashank, ashape = a[eid]
+            bx, by, br, be, bc, bid, bplane, bshank, bshape = b[eid]
+            if ae != be or ac != bc or aid != bid or ashank != bshank or ashape != bshape:
+                return False
+            if any(abs(av - bv) > tol for av, bv in zip(aplane, bplane)):
+                return False
+            if abs(ax - bx) > tol or abs(ay - by) > tol or abs(ar - br) > tol:
+                return False
+        return True
+
+    def _restore_state(self, state) -> None:
+        """
+        Restore snapshot into scene (undo/redo).
+
+        Recreates Electrode models from state, calls _set_electrodes,
+        then refreshes visuals.
+        """
+        self._is_restoring_state = True
+        try:
+            models: list[Electrode] = []
+            for eid, values in sorted(state.items(), key=lambda kv: kv[0]):
+                x, y, radius, enabled, channel_index, contact_id, contact_plane_axis, shank_id, shape = values
+                models.append(
+                    Electrode(
+                        eid=eid,
+                        x=x,
+                        y=y,
+                        radius=radius,
+                        enabled=enabled,
+                        channel_index=channel_index,
+                        contact_id=contact_id,
+                        contact_plane_axis=contact_plane_axis,
+                        shank_id=shank_id,
+                        shape=shape,
+                    )
+                )
+            self._set_electrodes(models)
+        finally:
+            self._is_restoring_state = False
+        self._on_scene_visuals_changed()
+
+    def _push_undo(self, before_state) -> None:
+        """
+        Push state onto undo stack and clear redo stack.
+
+        Limits history size to _max_history.
+        """
+        self.undo_stack.append(before_state)
+        if len(self.undo_stack) > self._max_history:
+            self.undo_stack.pop(0)
+        self.redo_stack.clear()
+
+    def _commit_if_changed(self, before_state) -> None:
+        """
+        Record undo entry only when state actually changed.
+
+        Compares before_state with current; if different, push undo and mark dirty.
+        """
+        after_state = self._capture_state()
+        if not self._states_equal(before_state, after_state):
+            self._push_undo(before_state)
+            self.is_dirty = True
+            self._update_title()
+
+    def _on_interaction_begin(self) -> None:
+        """
+        Store snapshot of state before interaction (mouse press).
+        """
+        self._interaction_snapshot = self._capture_state()
+
+    def _on_interaction_end(self) -> None:
+        """
+        Finalize interaction on mouse release: commit undo if changed.
+        """
+        if self._interaction_snapshot is None:
+            return
+        self._commit_if_changed(self._interaction_snapshot)
+        self._interaction_snapshot = None
+        # Refresh panel and scene rect after drag (skipped during drag to avoid crash).
+        self._on_scene_visuals_changed()
+
+    def _on_scene_visuals_changed(self) -> None:
+        """
+        Refresh panel and overlays when geometry/selection changes.
+
+        Ignored during _is_restoring_state to avoid undo/redo recursion.
+        Skipped during drag (_interaction_snapshot set) to avoid crash when
+        moving many electrodes: ItemPositionHasChanged fires for each item,
+        causing excessive setSceneRect/invalidate calls.
+        """
+        if self._is_restoring_state:
+            return  # Avoid recursion during undo/redo restore.
+        if self._interaction_snapshot is not None:
+            return  # Skip during drag; _on_interaction_end will refresh.
+        self._refresh_panel_values()
+        self.scene.setSceneRect(self._electrode_bounds_rect(margin=DEFAULT_SCENE_MARGIN))
+        self.scene.invalidate(
+            self.scene.sceneRect(),
+            QGraphicsScene.BackgroundLayer | QGraphicsScene.ForegroundLayer,
+        )
+        self.view.viewport().update()
+
+    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        """
+        Handle global shortcuts: Ctrl+Z (undo), Ctrl+Y (redo).
+        Suppr/Backspace for delete is handled by ElectrodeView when it has focus.
+        """
+        if event.matches(QKeySequence.Undo):
+            self._undo()
+            event.accept()
+            return
+        if event.matches(QKeySequence.Redo):
+            self._redo()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _undo(self) -> None:
+        """
+        Undo: restore previous state and put current into redo.
+        """
+        if not self.undo_stack:
+            return
+        current = self._capture_state()
+        previous = self.undo_stack.pop()
+        self.redo_stack.append(current)
+        self._restore_state(previous)
+
+    def _redo(self) -> None:
+        """
+        Redo: restore next state and put current back into undo.
+        """
+        if not self.redo_stack:
+            return
+        current = self._capture_state()
+        nxt = self.redo_stack.pop()
+        self.undo_stack.append(current)
+        self._restore_state(nxt)
+
+    def _generate_aligned_grid(self, rows: int, cols: int, pitch: float) -> None:
+        """
+        Create regular rows x cols grid with pitch spacing.
+
+        Electrodes at (c*pitch, r*pitch), eid = 0..rows*cols-1.
+        """
+        models: list[Electrode] = []
+        eid = 0
+        for r in range(rows):
+            for c in range(cols):
+                models.append(Electrode(eid=eid, x=c * pitch, y=r * pitch, channel_index=eid, contact_id="A-000"))
+                eid += 1
+        self._set_electrodes(models)
+
+    def _create_new_matrix_interactive(self) -> None:
+        """
+        Handler for File > New: confirm replacement, open dialog, create grid.
+        """
+        if not self._confirm_before_replace("create a new matrix"):
+            return
+        before = self._capture_state()
+        if self._prompt_new_matrix_parameters():
+            self._commit_if_changed(before)
+
+    def _refresh_label_layouts(self) -> None:
+        """
+        Refresh label positions on all electrode items (after zoom/scale change).
+        Labels use ItemIgnoresTransformations; their layout depends on view scale.
+        """
+        for item in self.items.values():
+            item._layout_labels()
+
+    def _fit_view(self) -> None:
+        """
+        Fit view to frame electrodes with margin and centering.
+
+        Two spaces managed:
+        - fit_rect: visual framing (electrodes + padding),
+        - sceneRect: larger navigable area for scroll/pan in margins.
+        Centers fit_rect in usable area (excluding axis bands).
+        """
+        if not self.electrodes:
+            return
+        base_rect = self._electrode_bounds_rect(margin=0.0)
+        # Padding scales with electrode extent for comfortable framing.
+        fit_padding = max(FIT_PADDING_MIN, FIT_PADDING_RATIO * max(base_rect.width(), base_rect.height()))
+        fit_rect = base_rect.adjusted(-fit_padding, -fit_padding, fit_padding, fit_padding)
+        scene_margin = max(DEFAULT_SCENE_MARGIN, fit_padding * 1.5)
+        self.scene.setSceneRect(self._electrode_bounds_rect(margin=scene_margin))
+        self.view.fitInView(fit_rect, Qt.KeepAspectRatio)
+        # fitInView resets transform; reapply Cartesian orientation (Y up).
+        vp = self.view.viewport().rect()
+        axis_w = AXIS_BAND_WIDTH
+        axis_h = AXIS_BAND_HEIGHT
+        usable_w = max(vp.width() - axis_w, 1)
+        usable_h = max(vp.height() - axis_h, 1)
+        # Center the fit rect in the usable area (excluding axis bands).
+        desired_vp_center = QPoint(axis_w + usable_w // 2, axis_h + usable_h // 2)
+        current_vp_pos = self.view.mapFromScene(fit_rect.center())
+        # Scroll so fit rect center aligns with usable area center.
+        delta_vp = current_vp_pos - desired_vp_center
+        self.view.horizontalScrollBar().setValue(self.view.horizontalScrollBar().value() + delta_vp.x())
+        self.view.verticalScrollBar().setValue(self.view.verticalScrollBar().value() + delta_vp.y())
+        self._refresh_label_layouts()
+
+    def _apply_radius(self) -> None:
+        """
+        Apply radius field value to all selected electrodes.
+
+        Validates radius > 0. Ignored if no selection.
+        """
+        selected = self._selected_items()
+        if not selected:
+            return
+        before = self._capture_state()
+        try:
+            radius = float(self.radius_edit.text())
+            if radius <= 0:
+                raise ValueError
+        except ValueError:
+            # Non-numeric or <= 0 value.
+            QMessageBox.critical(self, "Invalid radius", "Radius must be a positive number.")
+            return
+        for item in selected:
+            item.set_radius(radius)
+            item.sync_from_model()
+        self._refresh_panel_values()
+        # Record undo if effective change.
+        self._commit_if_changed(before)
+
+    def _apply_xy_single(self) -> None:
+        """
+        Set absolute X/Y for a single selected electrode.
+
+        Requires exactly one selection. Validates X and Y are numeric.
+        """
+        selected = self._selected_items()
+        if len(selected) != 1:
+            QMessageBox.information(self, "Single selection required", "Select exactly one electrode.")
+            return
+        before = self._capture_state()
+        try:
+            x = float(self.x_edit.text())
+            y = float(self.y_edit.text())
+        except ValueError:
+            QMessageBox.critical(self, "Invalid X/Y", "X and Y must be numeric values.")
+            return
+        selected[0].setPos(x, y)
+        self._refresh_panel_values()
+        self._commit_if_changed(before)
+
+    def _apply_channel_index(self) -> None:
+        """
+        Apply channel_index to all selected electrodes.
+
+        Updates duplicate flags after modification.
+        """
+        selected = self._selected_items()
+        if not selected:
+            return
+        before = self._capture_state()
+        text = self.channel_index_edit.text().strip()
+        if text == "":
+            QMessageBox.information(self, "No values", "Fill Channel index before applying.")
+            return
+        try:
+            value = int(text)
+        except ValueError:
+            QMessageBox.critical(self, "Invalid channel index", "Channel index must be an integer.")
+            return
+        for item in selected:
+            item.model.channel_index = value
+            item.sync_from_model()
+        self._update_duplicate_flags()
+        self._refresh_panel_values()
+        self._commit_if_changed(before)
+
+    def _apply_contact_id(self) -> None:
+        """
+        Apply contact_id to all selected electrodes.
+
+        Updates duplicate flags after modification.
+        """
+        selected = self._selected_items()
+        if not selected:
+            return
+        before = self._capture_state()
+        text = self.contact_id_edit.text().strip()
+        if text == "":
+            QMessageBox.information(self, "No values", "Fill Contact ID before applying.")
+            return
+        for item in selected:
+            item.model.contact_id = text
+            item.sync_from_model()
+        self._update_duplicate_flags()
+        self._refresh_panel_values()
+        self._commit_if_changed(before)
+
+    def _parse_contact_plane_axis_text(self, text: str) -> tuple[float, float, float, float] | None:
+        """
+        Parse axis text: "x0,x1,y0,y1" or space-separated values.
+
+        Returns:
+            (x0, x1, y0, y1) or None if not exactly 4 numeric values.
+        """
+        parts = [p for p in text.replace(",", " ").split() if p]
+        if len(parts) != 4:
+            return None
+        try:
+            x0, x1, y0, y1 = (float(p) for p in parts)
+        except ValueError:
+            return None
+        return x0, x1, y0, y1
+
+    def _apply_contact_plane_axis(self) -> None:
+        """
+        Apply contact plane axis (x0,x1,y0,y1) to selected electrodes.
+
+        Parses field text; requires 4 numeric values.
+        """
+        selected = self._selected_items()
+        if not selected:
+            return
+        before = self._capture_state()
+        text = self.contact_plane_axis_edit.text().strip()
+        if text == "":
+            QMessageBox.information(self, "No values", "Fill Contact plane axis before applying.")
+            return
+        value = self._parse_contact_plane_axis_text(text)
+        if value is None:
+            QMessageBox.critical(self, "Invalid contact plane axis", "Use 4 values: x0, x1, y0, y1.")
+            return
+        for item in selected:
+            item.model.contact_plane_axis = value
+        self._refresh_panel_values()
+        self._commit_if_changed(before)
+
+    def _apply_shank_id(self) -> None:
+        """
+        Apply shank_id to all selected electrodes.
+        """
+        selected = self._selected_items()
+        if not selected:
+            return
+        before = self._capture_state()
+        text = self.shank_id_edit.text()
+        for item in selected:
+            item.model.shank_id = text
+        self._refresh_panel_values()
+        self._commit_if_changed(before)
+
+    def _apply_shape(self) -> None:
+        """
+        Apply shape to selected electrodes (currently forced to 'circle').
+        """
+        selected = self._selected_items()
+        if not selected:
+            return
+        before = self._capture_state()
+        value = self.shape_combo.currentText().strip().lower() or "circle"
+        if value != "circle":
+            value = "circle"
+        for item in selected:
+            item.model.shape = value
+            item.sync_from_model()
+        self._refresh_panel_values()
+        self._commit_if_changed(before)
+
+    def _move_selection_by_delta(self) -> None:
+        """
+        Move selected electrodes by (dX, dY).
+
+        Reads dX and dY from panel fields; validates they are numeric.
+        """
+        selected = self._selected_items()
+        if not selected:
+            return
+        before = self._capture_state()
+        try:
+            dx = float(self.dx_edit.text())
+            dy = float(self.dy_edit.text())
+        except ValueError:
+            QMessageBox.critical(self, "Invalid dX/dY", "dX and dY must be numeric values.")
+            return
+        for item in selected:
+            p = item.pos()
+            item.setPos(p.x() + dx, p.y() + dy)
+        self._refresh_panel_values()
+        self._commit_if_changed(before)
+
+    def _delete_selected(self) -> None:
+        """
+        Delete all selected electrodes.
+        """
+        selected = self._selected_items()
+        if not selected:
+            return
+        before = self._capture_state()
+        selected_eids = {item.model.eid for item in selected}
+        models = [m for m in self.electrodes.values() if m.eid not in selected_eids]
+        self._set_electrodes(models)
+        self._commit_if_changed(before)
+
+    def _toggle_enabled(self) -> None:
+        """
+        Invert enabled flag for each selected electrode.
+        """
+        selected = self._selected_items()
+        if not selected:
+            return
+        before = self._capture_state()
+        for item in selected:
+            item.model.enabled = not item.model.enabled
+            item.sync_from_model()
+        self._refresh_panel_values()
+        self._commit_if_changed(before)
+
+    def _refresh_panel_values(self) -> None:
+        """
+        Update side panel fields according to selection.
+
+        - 0 selections: empty fields.
+        - 1 selection: all electrode values.
+        - N selections: common values or empty if mixed.
+        """
+        selected = self._selected_items()
+        self.selected_count_label.setText(str(len(selected)))
+
+        # Single selection: show all editable fields.
+        if len(selected) == 1:
+            m = selected[0].model
+            # Fill all fields with model values.
+            self.radius_edit.setText(f"{m.radius:.2f}")
+            self.x_edit.setText(f"{m.x:.2f}")
+            self.y_edit.setText(f"{m.y:.2f}")
+            self.channel_index_edit.setText(str(m.channel_index))
+            self.contact_id_edit.setText(m.contact_id)
+            x0, x1, y0, y1 = m.contact_plane_axis
+            self.contact_plane_axis_edit.setText(f"{x0:g}, {x1:g}, {y0:g}, {y1:g}")
+            self.shank_id_edit.setText(m.shank_id)
+            self.shape_combo.setCurrentText(m.shape if m.shape else "circle")
+            return
+
+        # Multi-selection: show common values or empty when mixed.
+        if len(selected) > 1:
+            # Extract values from each electrode.
+            radii = [it.model.radius for it in selected]
+            channels = [it.model.channel_index for it in selected]
+            contacts = [it.model.contact_id for it in selected]
+            axes = [it.model.contact_plane_axis for it in selected]
+            shanks = [it.model.shank_id for it in selected]
+            # Show common value or empty if mixed.
+            self.radius_edit.setText(f"{radii[0]:.2f}" if max(radii) - min(radii) < 1e-9 else "")
+            self.channel_index_edit.setText(str(channels[0]) if min(channels) == max(channels) else "")
+            self.contact_id_edit.setText(contacts[0] if all(c == contacts[0] for c in contacts) else "")
+            if all(a == axes[0] for a in axes):
+                x0, x1, y0, y1 = axes[0]
+                self.contact_plane_axis_edit.setText(f"{x0:g}, {x1:g}, {y0:g}, {y1:g}")
+            else:
+                self.contact_plane_axis_edit.setText("")
+            self.shank_id_edit.setText(shanks[0] if all(s == shanks[0] for s in shanks) else "")
+            self.shape_combo.setCurrentText("circle")
+            self.x_edit.setText("")
+            self.y_edit.setText("")
+            return
+
+        # No selection: clear all panel fields.
+        self.radius_edit.setText("")
+        self.x_edit.setText("")
+        self.y_edit.setText("")
+        self.channel_index_edit.setText("")
+        self.contact_id_edit.setText("")
+        self.contact_plane_axis_edit.setText("")
+        self.shank_id_edit.setText("")
+        self.shape_combo.setCurrentText("circle")
+
+
+def main() -> None:
+    """
+    Application entry point.
+
+    Creates QApplication, ElectrodeMatrixEditorQt window, shows and runs event loop.
+    """
+    app = QApplication([])
+    win = ElectrodeMatrixEditorQt()
+    win.show()
+    win.raise_()
+    win.activateWindow()
+    app.exec()
+
+
+if __name__ == "__main__":
+    main()
