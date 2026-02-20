@@ -14,7 +14,7 @@ The goal of this module is to keep dialog code separated from the main window:
 DEFAULT_ROWS = 8
 DEFAULT_COLS = 8
 DEFAULT_PITCH = 50.0
-DEFAULT_UNITS = "µm"
+DEFAULT_UNITS = "um"
 
 
 class NewMatrixDialog(QDialog):
