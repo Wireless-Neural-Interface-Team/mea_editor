@@ -14,4 +14,4 @@ GUI to create and modify MEA compatible with probeinterface
 You should see (si_env) in your terminal.
 6. Run _uv pip install -r requirements.txt_
 7. Download the folder _MEA Editor Python Files_ and run _buile_exe.py_
-It creates an .exe that is the MEA Editor software.
+It creates a standalone .exe file that is the MEA Editor software.
