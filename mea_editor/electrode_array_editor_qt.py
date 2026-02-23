@@ -3,14 +3,14 @@ from __future__ import annotations
 from collections import Counter
 
 """
-Qt standalone editor for electrode matrices.
+Qt standalone editor for electrode arrays.
 
 Architecture overview
 ---------------------
 - `ElectrodeView`: custom QGraphicsView for interaction + overlays.
 - `GridScene`: lightweight scene wrapper exposing dynamic X/Y axes.
 - `ElectrodeItem`: visual/interactive representation of one `Electrode`.
-- `ElectrodeMatrixEditorQt`: main window, business logic, file workflow.
+- `ElectrodeArrayEditorQt`: main window, business logic, file workflow.
 
 Coordinate convention
 ---------------------
@@ -19,7 +19,7 @@ coordinates are naturally Y-down, the view transform is inverted on Y.
 
 Persistence
 -----------
-All file operations are routed through `electrode_matrix_io.py`, which reads/
+All file operations are routed through `electrode_array_io.py`, which reads/
 writes probeinterface-compatible JSON.
 """
 
@@ -51,9 +51,9 @@ try:
 except ImportError as exc:
     raise SystemExit("PySide6 is required. Install with: pip install PySide6") from exc
 
-from electrode_matrix_dialogs import NewMatrixDialog
-from electrode_matrix_io import load_electrodes_from_file, save_electrodes_to_file
-from electrode_matrix_types import Electrode
+from .electrode_array_dialogs import NewArrayDialog
+from .electrode_array_io import load_electrodes_from_file, save_electrodes_to_file
+from .electrode_array_types import Electrode
 
 # Overlay axis band dimensions (in viewport pixels).
 AXIS_BAND_HEIGHT = 24
@@ -499,7 +499,7 @@ class ElectrodeItem(QGraphicsPathItem):
         self._refresh_style()
 
 
-class ElectrodeMatrixEditorQt(QMainWindow):
+class ElectrodeArrayEditorQt(QMainWindow):
     """
     Main application window orchestrating UI, state, and file workflow.
 
@@ -511,7 +511,7 @@ class ElectrodeMatrixEditorQt(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Electrode Matrix Editor (Qt Standalone)")
+        self.setWindowTitle("Electrode Array Editor (Qt Standalone)")
         self.resize(1280, 800)
         self.current_file_path: str | None = None
         self.is_dirty = False
@@ -558,7 +558,7 @@ class ElectrodeMatrixEditorQt(QMainWindow):
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Warning)
             msg.setWindowTitle("Unsaved changes")
-            msg.setText("The current matrix has unsaved changes.")
+            msg.setText("The current array has unsaved changes.")
             msg.setInformativeText("Do you want to save before closing?")
             save_btn = msg.addButton("Save", QMessageBox.AcceptRole)
             discard_btn = msg.addButton("Discard", QMessageBox.DestructiveRole)
@@ -566,7 +566,7 @@ class ElectrodeMatrixEditorQt(QMainWindow):
             msg.exec()
             clicked = msg.clickedButton()
             if clicked == save_btn:
-                if self._save_current_matrix(show_success=False):
+                if self._save_current_array(show_success=False):
                     event.accept()
                 else:
                     event.ignore()
@@ -732,22 +732,22 @@ class ElectrodeMatrixEditorQt(QMainWindow):
         file_menu = self.menuBar().addMenu("File")
         act_new = QAction("New array...", self)
         act_new.setShortcut(QKeySequence.New)
-        act_new.triggered.connect(self._create_new_matrix_interactive)
+        act_new.triggered.connect(self._create_new_array_interactive)
         file_menu.addAction(act_new)
 
         act_open = QAction("Open...", self)
         act_open.setShortcut(QKeySequence.Open)
-        act_open.triggered.connect(self._menu_open_matrix)
+        act_open.triggered.connect(self._menu_open_array)
         file_menu.addAction(act_open)
 
         act_save = QAction("Save", self)
         act_save.setShortcut(QKeySequence.Save)
-        act_save.triggered.connect(self._menu_save_matrix)
+        act_save.triggered.connect(self._menu_save_array)
         file_menu.addAction(act_save)
 
         act_save_as = QAction("Save As...", self)
         act_save_as.setShortcut(QKeySequence.SaveAs)
-        act_save_as.triggered.connect(self._menu_save_matrix_as)
+        act_save_as.triggered.connect(self._menu_save_array_as)
         file_menu.addAction(act_save_as)
 
     def _selected_items(self) -> list[ElectrodeItem]:
@@ -874,7 +874,7 @@ class ElectrodeMatrixEditorQt(QMainWindow):
 
     def _apply_si_units(self) -> None:
         """
-        Apply distance unit (si_units) at matrix level.
+        Apply distance unit (si_units) at array level.
 
         Reads from panel field, validates, updates and marks dirty.
         """
@@ -896,44 +896,44 @@ class ElectrodeMatrixEditorQt(QMainWindow):
         """
         dirty_suffix = " *" if self.is_dirty else ""
         if self.current_file_path:
-            self.setWindowTitle(f"Electrode Matrix Editor (Qt Standalone) - {self.current_file_path}{dirty_suffix}")
+            self.setWindowTitle(f"Electrode Array Editor (Qt Standalone) - {self.current_file_path}{dirty_suffix}")
         else:
-            self.setWindowTitle(f"Electrode Matrix Editor (Qt Standalone){dirty_suffix}")
+            self.setWindowTitle(f"Electrode Array Editor (Qt Standalone){dirty_suffix}")
 
     def _startup_workflow(self) -> None:
         """
-        On startup, show dialog: open or create matrix.
+        On startup, show dialog: open or create array.
 
         If user cancels or fails to open/create, close application.
         Called after main window is shown so it appears as a proper window.
         """
         msg = QMessageBox(self)
-        msg.setWindowTitle("Electrode Matrix Editor")
+        msg.setWindowTitle("Electrode Array Editor")
         msg.setText("Choose how to start:")
-        open_btn = msg.addButton("Open existing matrix", QMessageBox.AcceptRole)
-        new_btn = msg.addButton("Create new matrix", QMessageBox.ActionRole)
+        open_btn = msg.addButton("Open existing array", QMessageBox.AcceptRole)
+        new_btn = msg.addButton("Create new array", QMessageBox.ActionRole)
         cancel_btn = msg.addButton(QMessageBox.Cancel)
         msg.exec()
         clicked = msg.clickedButton()
         if clicked == open_btn:
-            loaded = self._prompt_open_matrix_file()
+            loaded = self._prompt_open_array_file()
             if not loaded:
-                if not self._prompt_new_matrix_parameters():
+                if not self._prompt_new_array_parameters():
                     self.close()
         elif clicked == new_btn:
-            if not self._prompt_new_matrix_parameters():
+            if not self._prompt_new_array_parameters():
                 self.close()
         else:
             self.close()
 
-    def _prompt_new_matrix_parameters(self) -> bool:
+    def _prompt_new_array_parameters(self) -> bool:
         """
         Open new-matrix dialog and generate grid if accepted.
 
         Returns:
             True if grid was created, False if cancelled.
         """
-        dialog = NewMatrixDialog(self)
+        dialog = NewArrayDialog(self)
         if dialog.exec() != QDialog.Accepted:
             return False
         rows, cols, pitch, units = dialog.values()
@@ -947,23 +947,23 @@ class ElectrodeMatrixEditorQt(QMainWindow):
         self.activateWindow()
         return True
 
-    def _prompt_open_matrix_file(self) -> bool:
+    def _prompt_open_array_file(self) -> bool:
         """
-        Prompt for JSON path via dialog and load matrix.
+        Prompt for JSON path via dialog and load array.
 
         Returns:
             True if loaded successfully, False if cancelled or error.
         """
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Open matrix JSON",
+            "Open array JSON",
             "",
             "JSON files (*.json);;All files (*.*)",
         )
         if not path:
             return False
         try:
-            self._load_matrix_from_file(path)
+            self._load_array_from_file(path)
         except Exception as exc:
             QMessageBox.critical(self, "Load error", f"Could not load file:\n{exc}")
             return False
@@ -975,20 +975,20 @@ class ElectrodeMatrixEditorQt(QMainWindow):
         self.activateWindow()
         return True
 
-    def _menu_open_matrix(self) -> None:
+    def _menu_open_array(self) -> None:
         """Menu handler for Open action with unsaved-work protection."""
-        if self._confirm_before_replace("open a matrix"):
-            self._prompt_open_matrix_file()
+        if self._confirm_before_replace("open an array"):
+            self._prompt_open_array_file()
 
-    def _menu_save_matrix(self) -> None:
+    def _menu_save_array(self) -> None:
         """Menu handler for Save."""
-        self._save_current_matrix(show_success=True)
+        self._save_current_array(show_success=True)
 
-    def _menu_save_matrix_as(self) -> None:
+    def _menu_save_array_as(self) -> None:
         """Menu handler for Save As."""
-        self._save_current_matrix_as(show_success=True)
+        self._save_current_array_as(show_success=True)
 
-    def _save_current_matrix(self, show_success: bool = False) -> bool:
+    def _save_current_array(self, show_success: bool = False) -> bool:
         """
         Save to current path. If no path, open Save As dialog.
 
@@ -999,22 +999,22 @@ class ElectrodeMatrixEditorQt(QMainWindow):
             True if saved, False otherwise.
         """
         if not self.electrodes:
-            QMessageBox.information(self, "Save matrix", "No matrix to save.")
+            QMessageBox.information(self, "Save array", "No array to save.")
             return False
         if not self.current_file_path:
-            return self._save_current_matrix_as(show_success=show_success)
+            return self._save_current_array_as(show_success=show_success)
         try:
-            self._save_matrix_to_file(self.current_file_path)
+            self._save_array_to_file(self.current_file_path)
         except Exception as exc:
             QMessageBox.critical(self, "Save error", f"Could not save file:\n{exc}")
             return False
         self.is_dirty = False
         self._update_title()
         if show_success:
-            QMessageBox.information(self, "Save matrix", "Matrix saved successfully.")
+            QMessageBox.information(self, "Save array", "Array saved successfully.")
         return True
 
-    def _save_current_matrix_as(self, show_success: bool = False) -> bool:
+    def _save_current_array_as(self, show_success: bool = False) -> bool:
         """
         Save with explicit file selection dialog.
 
@@ -1022,18 +1022,18 @@ class ElectrodeMatrixEditorQt(QMainWindow):
             True if saved, False if cancelled or error.
         """
         if not self.electrodes:
-            QMessageBox.information(self, "Save matrix", "No matrix to save.")
+            QMessageBox.information(self, "Save array", "No array to save.")
             return False
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save matrix JSON",
+            "Save array JSON",
             self.current_file_path or "",
             "JSON files (*.json);;All files (*.*)",
         )
         if not path:
             return False
         try:
-            self._save_matrix_to_file(path)
+            self._save_array_to_file(path)
         except Exception as exc:
             QMessageBox.critical(self, "Save error", f"Could not save file:\n{exc}")
             return False
@@ -1041,7 +1041,7 @@ class ElectrodeMatrixEditorQt(QMainWindow):
         self.is_dirty = False
         self._update_title()
         if show_success:
-            QMessageBox.information(self, "Save matrix", "Matrix saved successfully.")
+            QMessageBox.information(self, "Save array", "Array saved successfully.")
         return True
 
     def _confirm_before_replace(self, action_label: str) -> bool:
@@ -1055,7 +1055,7 @@ class ElectrodeMatrixEditorQt(QMainWindow):
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Warning)
             msg.setWindowTitle("Unsaved changes")
-            msg.setText("The current matrix has unsaved changes.")
+            msg.setText("The current array has unsaved changes.")
             msg.setInformativeText("Do you want to save before continuing?")
             save_btn = msg.addButton("Save", QMessageBox.AcceptRole)
             discard_btn = msg.addButton("Discard", QMessageBox.DestructiveRole)
@@ -1063,7 +1063,7 @@ class ElectrodeMatrixEditorQt(QMainWindow):
             msg.exec()
             clicked = msg.clickedButton()
             if clicked == save_btn:
-                if not self._save_current_matrix(show_success=False):
+                if not self._save_current_array(show_success=False):
                     return False
             elif clicked == discard_btn:
                 pass
@@ -1072,12 +1072,12 @@ class ElectrodeMatrixEditorQt(QMainWindow):
             else:
                 return False
 
-        # If matrix not empty, ask for replacement confirmation.
+        # If array not empty, ask for replacement confirmation.
         if self.electrodes:
             confirm = QMessageBox.question(
                 self,
                 "Confirm action",
-                f"Are you sure you want to {action_label}?\nThe current matrix will be replaced.",
+                f"Are you sure you want to {action_label}?\nThe current array will be replaced.",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -1085,13 +1085,13 @@ class ElectrodeMatrixEditorQt(QMainWindow):
                 return False
         return True
 
-    def _save_matrix_to_file(self, path: str) -> None:
+    def _save_array_to_file(self, path: str) -> None:
         """
-        Persist current models via electrode_matrix_io (probeinterface format).
+        Persist current models via electrode_array_io (probeinterface format).
         """
         save_electrodes_to_file(path, list(self.electrodes.values()), self.si_units)
 
-    def _load_matrix_from_file(self, path: str) -> None:
+    def _load_array_from_file(self, path: str) -> None:
         """
         Load models from file and update si_units in memory.
         """
@@ -1291,14 +1291,14 @@ class ElectrodeMatrixEditorQt(QMainWindow):
                 eid += 1
         self._set_electrodes(models)
 
-    def _create_new_matrix_interactive(self) -> None:
+    def _create_new_array_interactive(self) -> None:
         """
         Handler for File > New: confirm replacement, open dialog, create grid.
         """
-        if not self._confirm_before_replace("create a new matrix"):
+        if not self._confirm_before_replace("create a new array"):
             return
         before = self._capture_state()
-        if self._prompt_new_matrix_parameters():
+        if self._prompt_new_array_parameters():
             self._commit_if_changed(before)
 
     def _refresh_label_layouts(self) -> None:
@@ -1618,10 +1618,10 @@ def main() -> None:
     """
     Application entry point.
 
-    Creates QApplication, ElectrodeMatrixEditorQt window, shows and runs event loop.
+    Creates QApplication, ElectrodeArrayEditorQt window, shows and runs event loop.
     """
     app = QApplication([])
-    win = ElectrodeMatrixEditorQt()
+    win = ElectrodeArrayEditorQt()
     win.show()
     win.raise_()
     win.activateWindow()
@@ -1630,3 +1630,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 """
-Shared data structures for the electrode matrix editor.
+Shared data structures for the electrode array editor.
 
 This module intentionally stays minimal:
 - one dataclass (`Electrode`) used by both GUI and I/O layers,

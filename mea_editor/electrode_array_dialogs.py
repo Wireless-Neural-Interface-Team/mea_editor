@@ -3,7 +3,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QLineEdit, QSpinBox
 
 """
-Standalone dialogs used by the electrode matrix editor.
+Standalone dialogs used by the electrode array editor.
 
 The goal of this module is to keep dialog code separated from the main window:
 - clearer responsibilities,
@@ -17,25 +17,25 @@ DEFAULT_PITCH = 50.0
 DEFAULT_UNITS = "um"
 
 
-class NewMatrixDialog(QDialog):
+class NewArrayDialog(QDialog):
     """
-    Single window used to create a new aligned matrix.
+    Single window used to create a new aligned array.
 
     Returned values define the initial grid:
-    - rows/cols: matrix size
+    - rows/cols: array size
     - pitch: spacing between neighboring contacts
-    - si_units: metadata unit stored with the matrix file
+    - si_units: metadata unit stored with the array file
     """
 
     def __init__(self, parent=None) -> None:
         """
-        Initialize new-matrix creation dialog.
+        Initialize new-array creation dialog.
 
         Args:
             parent: Parent window (optional).
         """
         super().__init__(parent)
-        self.setWindowTitle("New Matrix Parameters")
+        self.setWindowTitle("New Array Parameters")
 
         form = QFormLayout(self)
         # Number of rows (1-512).

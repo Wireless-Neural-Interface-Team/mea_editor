@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mea-editor"
+version = "0.1.0"
+description = "GUI and library to create and modify MEA (Multi-Electrode Arrays) compatible with probeinterface"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Wireless Neural Interface Team"}
+]
+keywords = ["MEA", "electrode", "probeinterface", "neuroscience", "electrophysiology"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+dependencies = [
+    "PySide6>=6.5.0",
+    "numpy>=1.24.0",
+    "probeinterface>=0.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Wireless-Neural-Interface-Team/MEA-Editor"
+Repository = "https://github.com/Wireless-Neural-Interface-Team/MEA-Editor"
+
+[project.scripts]
+mea-editor = "mea_editor.electrode_array_editor_qt:main"

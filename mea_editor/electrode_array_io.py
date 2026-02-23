@@ -5,10 +5,10 @@ from typing import Any
 
 import numpy as np
 
-from electrode_matrix_types import Electrode
+from .electrode_array_types import Electrode
 
 """
-I/O layer for the electrode matrix editor.
+I/O layer for the electrode array editor.
 
 Supported inputs:
 1) probeinterface JSON (preferred)
@@ -188,7 +188,7 @@ def save_electrodes_to_file(path: str, electrodes: list[Electrode], si_units: st
     try:
         import probeinterface as ProbeI
     except Exception as exc:
-        raise ValueError("probeinterface is required to save matrix files.") from exc
+        raise ValueError("probeinterface is required to save array files.") from exc
 
     # probeinterface expects contacts in deterministic order.
     # Sort by eid for deterministic order.
