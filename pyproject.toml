@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mea-editor"
-version = "v0.1.0"
+version = "v0.1.1"
 description = "GUI and library to create and modify MEA (Multi-Electrode Arrays) compatible with probeinterface"
 readme = "README.md"
 license = {text = "MIT"}
