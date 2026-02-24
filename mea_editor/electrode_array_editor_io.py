@@ -1,14 +1,5 @@
-from __future__ import annotations
-
-import json
-from typing import Any
-
-import numpy as np
-
-from electrode_matrix_types import Electrode
-
 """
-I/O layer for the electrode matrix editor.
+I/O layer for the electrode array editor.
 
 Supported inputs:
 1) probeinterface JSON (preferred)
@@ -17,6 +8,15 @@ Supported inputs:
 Output:
 - probeinterface JSON only (for compatibility with the rest of the pipeline).
 """
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import numpy as np
+
+from .electrode import Electrode
 
 DEFAULT_RADIUS = 12.0
 MIN_RADIUS = 0.001
@@ -188,7 +188,7 @@ def save_electrodes_to_file(path: str, electrodes: list[Electrode], si_units: st
     try:
         import probeinterface as ProbeI
     except Exception as exc:
-        raise ValueError("probeinterface is required to save matrix files.") from exc
+        raise ValueError("probeinterface is required to save array files.") from exc
 
     # probeinterface expects contacts in deterministic order.
     # Sort by eid for deterministic order.

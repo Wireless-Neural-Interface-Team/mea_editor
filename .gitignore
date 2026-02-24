@@ -1,2 +1,8 @@
 *.exe
 *.pyc
+dist/
+build/
+*.egg-info/
+.eggs/
+__pycache__/
+*.spec
