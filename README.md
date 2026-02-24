@@ -16,11 +16,13 @@ The library is available on PyPI.
 7. Install library : run in terminal `uv pip install mea-editor`
 
 ## Run application
-1. Activate virtual environment: run in terminal `source si_env/bin/activate` (macOS/Linux) or `si_env\Scripts\activate` (Windows)
-2. Run in terminal `mea-editor`
+1. Allow script execution : run in terminal `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned`
+2. Activate virtual environment: run in terminal `source si_env/bin/activate` (macOS/Linux) or `si_env\Scripts\activate` (Windows)
+3. Run in terminal `mea-editor`
 
 ## Build a standalone executable (Windows: `.exe`, macOS/Linux: binary):
-1. Activate virtual environment: run in terminal `source si_env/bin/activate` (macOS/Linux) or `si_env\Scripts\activate` (Windows) 
+1. Allow script execution : run in terminal `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned`
+2. Activate virtual environment: run in terminal `source si_env/bin/activate` (macOS/Linux) or `si_env\Scripts\activate` (Windows) 
 3. Using the command-line terminal, navigate to the folder where you want the .exe file to be located.
 4. Build the executable in currentfolder/dist : run in terminal `mea-editor-build`
 
