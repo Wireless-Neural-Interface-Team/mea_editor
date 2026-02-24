@@ -20,9 +20,11 @@ try:
     from PySide6.QtWidgets import (
         QApplication,
         QComboBox,
+        QDialog,
         QFileDialog,
         QFormLayout,
         QFrame,
+        QGraphicsScene,
         QHBoxLayout,
         QLabel,
         QLineEdit,

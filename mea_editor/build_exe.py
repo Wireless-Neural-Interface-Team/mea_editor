@@ -15,6 +15,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
 def main():
     output_dir = Path.cwd() / "dist"
     exe_name = "ElectrodeArrayEditor.exe" if sys.platform == "win32" else "ElectrodeArrayEditor"
@@ -28,7 +31,7 @@ def main():
             print("Close ElectrodeArrayEditor and try again.")
             sys.exit(1)
 
-    # Module path for PyInstaller (handles relative imports)
+    launcher = SCRIPT_DIR / "run_mea_editor.py"
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--name=ElectrodeArrayEditor",
@@ -36,7 +39,7 @@ def main():
         "--onefile",
         "--clean",
         "--distpath", str(output_dir),
-        "mea_editor.electrode_array_editor_qt",
+        str(launcher.resolve()),
     ]
     subprocess.run(cmd, check=True, cwd=Path.cwd())
     print(f"\n✓ Executable created: {exe_path}")
