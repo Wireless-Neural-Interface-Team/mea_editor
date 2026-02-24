@@ -8,7 +8,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    environment: pypi-publish-environment
     permissions:
       id-token: write
 
