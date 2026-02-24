@@ -4,7 +4,7 @@ GUI to create and modify MEA (Multi-Electrode Arrays) compatible with [probeinte
 
 **Multi-platform:** Windows, macOS, Linux.
 
-The library is available on [PyPI].
+The library is available on PyPI.
 
 ## Installation (PyPI)
 1. Open terminal
