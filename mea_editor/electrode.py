@@ -1,7 +1,3 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
-
 """
 Shared data structures for the electrode array editor.
 
@@ -12,6 +8,10 @@ This module intentionally stays minimal:
 
 Keeping this module isolated makes state serialization and testing easier.
 """
+
+from __future__ import annotations
+
+from dataclasses import dataclass
 
 
 @dataclass(slots=True)

@@ -1,7 +1,3 @@
-from __future__ import annotations
-
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QLineEdit, QSpinBox
-
 """
 Standalone dialogs used by the electrode array editor.
 
@@ -10,6 +6,10 @@ The goal of this module is to keep dialog code separated from the main window:
 - easier maintenance,
 - easier reuse by other tools/scripts.
 """
+
+from __future__ import annotations
+
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QLineEdit, QSpinBox
 
 DEFAULT_ROWS = 8
 DEFAULT_COLS = 8

@@ -4,44 +4,22 @@ GUI to create and modify MEA (Multi-Electrode Arrays) compatible with [probeinte
 
 **Multi-platform:** Windows, macOS, Linux.
 
+The library is available on [PyPI].
+
 ## Installation (PyPI)
+1. Open terminal
+2. Run on terminal [uv](https://docs.astral.sh/uv/): `curl -LsSf https://astral.sh/uv/install.sh | sh` (macOS/Linux) or `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"` (Windows)
+3. Install virtual environment : run in terminal `uv venv si_env --python 3.12`
+4. Activate virtual environment: run in terminal `source si_env/bin/activate` (macOS/Linux) or `si_env\Scripts\activate` (Windows)
+5. Install library : run in terminal `pip install mea-editor`
 
-```bash
-pip install mea-editor
-mea-editor
-```
+## Run application
+1. Activate virtual environment: run in terminal `source si_env/bin/activate` (macOS/Linux) or `si_env\Scripts\activate` (Windows)
+2. Run in terminal `mea-editor`
 
-## Build standalone executable
+## Build a standalone executable (Windows: `.exe`, macOS/Linux: binary):
+1. Activate virtual environment: run in terminal `source si_env/bin/activate` (macOS/Linux) or `si_env\Scripts\activate` (Windows) 
+3. Using the command-line terminal, navigate to the folder where you want the .exe file to be located.
+4. Build the executable in currentfolder/dist : run in terminal `mea-editor-build`
 
-To create a standalone executable (Windows: `.exe`, macOS/Linux: binary):
-
-```bash
-pip install -e . pyinstaller PySide6
-python run_mea_editor/build_exe.py
-```
-
-The executable will be in `dist/` (ElectrodeArrayEditor.exe on Windows).
-
-## Installation from source (uv)
-
-1. Install [uv](https://docs.astral.sh/uv/): `curl -LsSf https://astral.sh/uv/install.sh | sh` (macOS/Linux) or `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"` (Windows)
-2. `uv venv si_env --python 3.12`
-3. Activate: `source si_env/bin/activate` (macOS/Linux) or `si_env\Scripts\activate` (Windows)
-4. `uv pip install -r requirements.txt`
-
-## Publishing (maintainers)
-
-### 1. PyPI Trusted Publisher
-
-1. Go to [pypi.org](https://pypi.org) → Manage → Publishing → Add a new trusted publisher
-2. Owner: `Wireless-Neural-Interface-Team`, Repository: `MEA-Editor`
-3. Workflow name: `publish-pypi.yml`
-4. Environment: `release` (optional)
-
-### 2. Release
-
-1. Update `version` in `pyproject.toml` and `mea_editor/__init__.py`
-2. Create a [GitHub Release](https://github.com/Wireless-Neural-Interface-Team/MEA-Editor/releases/new) (e.g. tag `v0.1.0`)
-3. Publish the release → workflow runs and publishes to PyPI
-
-Or run manually: Actions → Publish to PyPI → Run workflow
+The executable will be in `dist/` (in the current directory).

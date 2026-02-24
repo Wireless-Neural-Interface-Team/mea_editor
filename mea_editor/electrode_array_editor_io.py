@@ -1,12 +1,3 @@
-from __future__ import annotations
-
-import json
-from typing import Any
-
-import numpy as np
-
-from .electrode_array_types import Electrode
-
 """
 I/O layer for the electrode array editor.
 
@@ -17,6 +8,15 @@ Supported inputs:
 Output:
 - probeinterface JSON only (for compatibility with the rest of the pipeline).
 """
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import numpy as np
+
+from .electrode import Electrode
 
 DEFAULT_RADIUS = 12.0
 MIN_RADIUS = 0.001
