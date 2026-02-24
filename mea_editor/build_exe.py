@@ -14,6 +14,7 @@ The executable will be generated in dist/ (in the current directory).
 import subprocess
 import sys
 from pathlib import Path
+import tempfile
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -32,15 +33,17 @@ def main():
             sys.exit(1)
 
     launcher = SCRIPT_DIR / "run_mea_editor.py"
-    cmd = [
-        sys.executable, "-m", "PyInstaller",
-        "--name=ElectrodeArrayEditor",
-        "--windowed",
-        "--onefile",
-        "--clean",
-        "--distpath", str(output_dir),
-        str(launcher.resolve()),
-    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        cmd = [
+            sys.executable, "-m", "PyInstaller",
+            "--name=ElectrodeArrayEditor",
+            "--windowed",
+            "--onefile",
+            "--clean",
+            "--distpath", str(output_dir),
+            "--specpath", tmp,  # spec créé dans le dossier temporaire
+            str(launcher.resolve()),
+        ]
     subprocess.run(cmd, check=True, cwd=Path.cwd())
     print(f"\n✓ Executable created: {exe_path}")
 
