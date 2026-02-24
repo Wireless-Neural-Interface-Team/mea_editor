@@ -10,8 +10,9 @@ The library is available on PyPI.
 1. Open terminal
 2. Run on terminal [uv](https://docs.astral.sh/uv/): `curl -LsSf https://astral.sh/uv/install.sh | sh` (macOS/Linux) or `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"` (Windows)
 3. Install virtual environment : run in terminal `uv venv si_env --python 3.12`
-4. Activate virtual environment: run in terminal `source si_env/bin/activate` (macOS/Linux) or `si_env\Scripts\activate` (Windows)
-5. Install library : run in terminal `pip install mea-editor`
+4. Restart your terminal
+5. Activate virtual environment: run in terminal `source si_env/bin/activate` (macOS/Linux) or `si_env\Scripts\activate` (Windows)
+6. Install library : run in terminal `uv pip install mea-editor`
 
 ## Run application
 1. Activate virtual environment: run in terminal `source si_env/bin/activate` (macOS/Linux) or `si_env\Scripts\activate` (Windows)
