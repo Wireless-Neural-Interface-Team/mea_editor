@@ -38,8 +38,8 @@ dev = [
 
 
 [project.urls]
-Homepage = "https://github.com/Wireless-Neural-Interface-Team/mea-editor"
-Repository = "https://github.com/Wireless-Neural-Interface-Team/mea-editor"
+Homepage = "https://github.com/Wireless-Neural-Interface-Team/mea_editor"
+Repository = "https://github.com/Wireless-Neural-Interface-Team/mea_editor"
 
 [project.scripts]
 mea-editor = "mea_editor.electrode_array_editor_qt:run_app"
