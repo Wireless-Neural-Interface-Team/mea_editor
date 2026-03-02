@@ -27,4 +27,3 @@ The library is available on PyPI.
 4. Build the executable in currentfolder/dist : run in terminal `mea-editor-build`
 
 The executable will be in `dist/` (in the current directory).
-At the same time it creates a .spec file that can be deleted after build.
