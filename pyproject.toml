@@ -45,5 +45,5 @@ Homepage = "https://github.com/Wireless-Neural-Interface-Team/mea_editor"
 Repository = "https://github.com/Wireless-Neural-Interface-Team/mea_editor"
 
 [project.scripts]
-mea-editor = "mea_editor.electrode_array_editor_qt:run_app"
-mea-editor-build = "mea_editor.build_exe:main"
+mea-editor-gui = "mea_editor.electrode_array_editor_qt:run_app"
+mea-editor-gui-build = "mea_editor.build_exe:main"
