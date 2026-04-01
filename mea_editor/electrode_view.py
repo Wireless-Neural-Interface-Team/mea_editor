@@ -35,9 +35,7 @@ class ElectrodeView(QGraphicsPathItem):
         self._on_selection_change = on_selection_change
         # ItemSendsGeometryChanges required for ItemPositionHasChanged in itemChange.
         self.setFlags(
-            QGraphicsItem.ItemIsSelectable
-            | QGraphicsItem.ItemIsMovable
-            | QGraphicsItem.ItemSendsGeometryChanges
+            QGraphicsItem.ItemIsSelectable | QGraphicsItem.ItemSendsGeometryChanges
         )
         self.setZValue(10)  # Above grid lines.
 

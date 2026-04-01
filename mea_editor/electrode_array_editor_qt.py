@@ -170,6 +170,16 @@ class ElectrodeArrayEditorQt(QMainWindow):
         panel_layout.setSpacing(8)
         layout.addWidget(panel, stretch=1)
 
+        def make_row(*widgets):
+            """Compact helper to place multiple widgets on one form row (edit + button)."""
+            row = QWidget()
+            lo = QHBoxLayout(row)
+            lo.setContentsMargins(0, 0, 0, 0)
+            lo.setSpacing(4)
+            for w in widgets:
+                lo.addWidget(w)
+            return row
+
         # Selection block: selected count + si_units.
         sel_box = QFrame()
         sel_box.setFrameShape(QFrame.StyledPanel)
@@ -186,6 +196,13 @@ class ElectrodeArrayEditorQt(QMainWindow):
         units_layout.addWidget(b_units)
         sel_form.addRow("Selected", self.selected_count_label)
         sel_form.addRow("si_units", units_row)
+        self.contact_find_edit = QLineEdit("")
+        self.contact_find_edit.setPlaceholderText("e.g. A-001")
+        self.contact_find_edit.setClearButtonEnabled(True)
+        b_find_contact = QPushButton("Find")
+        b_find_contact.clicked.connect(self._find_by_contact_id)
+        self.contact_find_edit.returnPressed.connect(self._find_by_contact_id)
+        sel_form.addRow("Find contact ID", make_row(self.contact_find_edit, b_find_contact))
         panel_layout.addWidget(sel_box)
 
         # Edit block: radius, X/Y, channel, contact_id, plane_axis, shank, shape.
@@ -218,16 +235,6 @@ class ElectrodeArrayEditorQt(QMainWindow):
         b_shank.clicked.connect(self._apply_shank_id)
         b_shape = QPushButton("Apply Shape")
         b_shape.clicked.connect(self._apply_shape)
-
-        def make_row(*widgets):
-            """Compact helper to place multiple widgets on one form row (edit + button)."""
-            row = QWidget()
-            lo = QHBoxLayout(row)
-            lo.setContentsMargins(0, 0, 0, 0)
-            lo.setSpacing(4)
-            for w in widgets:
-                lo.addWidget(w)
-            return row
 
         e_form.addRow("Radius", make_row(self.radius_edit, b_radius))
         e_form.addRow("X/Y (single)", make_row(self.x_edit, self.y_edit, b_xy))
@@ -272,7 +279,7 @@ class ElectrodeArrayEditorQt(QMainWindow):
             "Click: select one\n"
             "Ctrl+Click: add/remove from selection\n"
             "Drag empty area: box selection\n"
-            "Drag selected electrode: move group\n"
+            "Move: use X/Y or dX/dY in the panel\n"
             "Suppr/Backspace: delete selected\n"
             "Wheel: zoom"
         )
@@ -315,6 +322,47 @@ class ElectrodeArrayEditorQt(QMainWindow):
             List of selected ElectrodeView (excludes other item types).
         """
         return [it for it in self.scene.selectedItems() if isinstance(it, ElectrodeView)]
+
+    def _find_by_contact_id(self) -> None:
+        """
+        Select electrode(s) whose contact_id matches the find field and scroll the view to them.
+
+        Matching order: exact (after strip), then case-insensitive exact.
+        """
+        query = self.contact_find_edit.text().strip()
+        if not query:
+            QMessageBox.information(self, "Find contact ID", "Enter a contact ID to search.")
+            return
+        if not self.items:
+            QMessageBox.information(self, "Find contact ID", "No electrodes in the current array.")
+            return
+
+        def norm(s: str) -> str:
+            return str(s).strip()
+
+        matches = [it for it in self.items.values() if norm(it.model.contact_id) == query]
+        if not matches:
+            q_lower = query.lower()
+            matches = [it for it in self.items.values() if norm(it.model.contact_id).lower() == q_lower]
+        if not matches:
+            QMessageBox.information(
+                self,
+                "Contact ID not found",
+                f"No electrode has contact ID « {query} ».",
+            )
+            return
+
+        self.scene.clearSelection()
+        for item in matches:
+            item.setSelected(True)
+
+        united = matches[0].sceneBoundingRect()
+        for item in matches[1:]:
+            united = united.united(item.sceneBoundingRect())
+        pad = 40.0
+        united = united.adjusted(-pad, -pad, pad, pad)
+        self.view.ensureVisible(united, 80, 80)
+        self._refresh_panel_values()
 
     def _grid_axes(self) -> tuple[list[float], list[float]]:
         """
