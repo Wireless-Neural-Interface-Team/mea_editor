@@ -60,6 +60,8 @@ class ElectrodeArrayView(QGraphicsView):
         self._add_electrode_at = lambda x, y: None
         self._on_delete = lambda: None
         self._on_view_transform_changed = lambda: None
+        self._is_middle_panning = False
+        self._last_pan_pos = None
 
     def set_interaction_callbacks(self, on_begin, on_end) -> None:
         """
@@ -101,6 +103,14 @@ class ElectrodeArrayView(QGraphicsView):
         """
         Handle mouse click: add mode or start interaction for undo.
         """
+        # Middle button drag pans the view.
+        if event.button() == Qt.MiddleButton:
+            self._is_middle_panning = True
+            self._last_pan_pos = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
+
         # Left button only.
         if event.button() == Qt.LeftButton:
             # In add mode, left-click creates an electrode at cursor position.
@@ -113,10 +123,30 @@ class ElectrodeArrayView(QGraphicsView):
             self._interaction_begin()
         super().mousePressEvent(event)
 
+    def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
+        """
+        While middle button is held, pan by translating scrollbars.
+        """
+        if self._is_middle_panning and self._last_pan_pos is not None:
+            delta = event.pos() - self._last_pan_pos
+            self._last_pan_pos = event.pos()
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
     def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
         """
         On click release, finalize interaction (commit undo if needed).
         """
+        if event.button() == Qt.MiddleButton and self._is_middle_panning:
+            self._is_middle_panning = False
+            self._last_pan_pos = None
+            self.unsetCursor()
+            event.accept()
+            return
+
         super().mouseReleaseEvent(event)
         if event.button() == Qt.LeftButton:
             # Commit undo snapshot if something changed during drag.

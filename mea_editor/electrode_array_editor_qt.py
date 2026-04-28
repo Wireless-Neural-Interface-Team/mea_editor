@@ -13,6 +13,8 @@ Architecture overview
 from __future__ import annotations
 
 from collections import Counter
+import importlib
+import threading
 
 try:
     from PySide6.QtCore import QPoint, QRectF, QTimer, Qt
@@ -106,6 +108,8 @@ class ElectrodeArrayEditorQt(QMainWindow):
         self._build_ui()
         self._build_menu()
         self._startup_done = False
+        self._preload_thread: threading.Thread | None = None
+        self._preload_started = False
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         """
@@ -516,6 +520,7 @@ class ElectrodeArrayEditorQt(QMainWindow):
         If user cancels or fails to open/create, close application.
         Called after main window is shown so it appears as a proper window.
         """
+        self._start_dependency_preload()
         msg = QMessageBox(self)
         msg.setWindowTitle("Electrode Array Editor")
         msg.setText("Choose how to start:")
@@ -542,6 +547,7 @@ class ElectrodeArrayEditorQt(QMainWindow):
         Returns:
             True if grid was created, False if cancelled.
         """
+        self._start_dependency_preload()
         dialog = NewArrayDialog(self)
         if dialog.exec() != QDialog.Accepted:
             return False
@@ -563,6 +569,7 @@ class ElectrodeArrayEditorQt(QMainWindow):
         Returns:
             True if loaded successfully, False if cancelled or error.
         """
+        self._start_dependency_preload()
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Open array JSON",
@@ -583,6 +590,29 @@ class ElectrodeArrayEditorQt(QMainWindow):
         self.raise_()
         self.activateWindow()
         return True
+
+    def _start_dependency_preload(self) -> None:
+        """
+        Preload optional heavy dependencies in background.
+
+        This runs while the user is choosing a file or defining a matrix, so
+        later file I/O actions are less likely to pause on first import.
+        """
+        if self._preload_started:
+            return
+        self._preload_started = True
+
+        def _preload() -> None:
+            for module_name in ("probeinterface", "pandas", "openpyxl"):
+                try:
+                    importlib.import_module(module_name)
+                except Exception:
+                    # Keep startup non-blocking; missing modules are handled
+                    # later with explicit user-facing error messages.
+                    pass
+
+        self._preload_thread = threading.Thread(target=_preload, daemon=True, name="dependency-preload")
+        self._preload_thread.start()
 
     def _menu_open_array(self) -> None:
         """Menu handler for Open action with unsaved-work protection."""

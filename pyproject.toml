@@ -28,11 +28,12 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Medical Science Apps.",
 ]
 dependencies = [
-    "PySide6>=6.5.0",
-    "numpy>=1.24.0",
-    "probeinterface>=0.3.0",
-    "pyinstaller>=6.0",
-    "openpyxl>=3.1.0",
+    "PySide6==6.5.0",
+    "numpy==1.24.0",
+    "probeinterface==0.3.0",
+    "pyinstaller==6.0",
+    "openpyxl==3.1.0",
+    "pandas==2.0.0",
 ]
 
 [project.optional-dependencies]
