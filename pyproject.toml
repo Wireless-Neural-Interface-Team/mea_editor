@@ -32,6 +32,7 @@ dependencies = [
     "numpy>=1.24.0",
     "probeinterface>=0.3.0",
     "pyinstaller>=6.0",
+    "openpyxl>=3.1.0",
 ]
 
 [project.optional-dependencies]

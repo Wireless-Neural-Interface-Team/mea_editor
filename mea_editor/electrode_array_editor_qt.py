@@ -289,7 +289,7 @@ class ElectrodeArrayEditorQt(QMainWindow):
 
     def _build_menu(self) -> None:
         """
-        Create File menu with New, Open, Save, Save As.
+        Create File menu with New, Open, Save, Save As, Export xlsx.
 
         Each action is connected to its handler and keyboard shortcut.
         """
@@ -313,6 +313,10 @@ class ElectrodeArrayEditorQt(QMainWindow):
         act_save_as.setShortcut(QKeySequence.SaveAs)
         act_save_as.triggered.connect(self._menu_save_array_as)
         file_menu.addAction(act_save_as)
+
+        act_export_xlsx = QAction("Export array as XLSX...", self)
+        act_export_xlsx.triggered.connect(self._menu_export_matrix_xlsx)
+        file_menu.addAction(act_export_xlsx)
 
     def _selected_items(self) -> list[ElectrodeView]:
         """
@@ -593,6 +597,35 @@ class ElectrodeArrayEditorQt(QMainWindow):
         """Menu handler for Save As."""
         self._save_current_array_as(show_success=True)
 
+    def _menu_export_matrix_xlsx(self) -> None:
+        """Menu handler for array export as XLSX."""
+        if not self.electrodes:
+            QMessageBox.information(self, "Export XLSX", "No array to export.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export array XLSX",
+            "",
+            "Excel files (*.xlsx);;All files (*.*)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        try:
+            self._export_matrix_to_xlsx(path)
+        except ImportError as exc:
+            QMessageBox.critical(
+                self,
+                "Export XLSX",
+                f"Could not export XLSX:\n{exc}\n\nInstall with: pip install openpyxl",
+            )
+            return
+        except Exception as exc:
+            QMessageBox.critical(self, "Export XLSX", f"Could not export XLSX:\n{exc}")
+            return
+        QMessageBox.information(self, "Export XLSX", "Matrix exported successfully.")
+
     def _save_current_array(self, show_success: bool = False) -> bool:
         """
         Save to current path. If no path, open Save As dialog.
@@ -703,6 +736,28 @@ class ElectrodeArrayEditorQt(QMainWindow):
         models, units = load_electrodes_from_file(path)
         self.si_units = units
         self._set_electrodes(models)
+
+    def _export_matrix_to_xlsx(self, path: str) -> None:
+        """
+        Export array data into an XLSX file.
+
+        Output columns:
+        - channel
+        - row
+        - col
+        """
+        try:
+            from openpyxl import Workbook
+        except ImportError as exc:
+            raise ImportError("openpyxl is required for XLSX export.") from exc
+
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "array"
+        worksheet.append(["channel", "row", "col"])
+        for model in sorted(self.electrodes.values(), key=lambda m: (m.channel_index, m.eid)):
+            worksheet.append([model.channel_index, model.x, model.y])
+        workbook.save(path)
 
     def _update_duplicate_flags(self) -> tuple[list[int], list[str], int]:
         """
