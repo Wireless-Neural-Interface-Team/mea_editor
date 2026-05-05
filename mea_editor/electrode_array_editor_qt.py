@@ -785,18 +785,22 @@ class ElectrodeArrayEditorQt(QMainWindow):
         Returns:
             (duplicate_channels, duplicate_contacts, empty_contact_count).
         """
-        # Count channel_index and contact_id to detect duplicates.
-        channel_counts = Counter(model.channel_index for model in self.electrodes.values())
+        # Count (shank_id, channel_index) so same channel on different shanks
+        # is allowed and does not trigger duplicate highlighting.
+        channel_key_counts = Counter(
+            (str(model.shank_id).strip(), model.channel_index) for model in self.electrodes.values()
+        )
         contact_counts = Counter(model.contact_id for model in self.electrodes.values())
-        duplicate_channels = sorted(value for value, count in channel_counts.items() if count > 1)
+        duplicate_channel_keys = {key for key, count in channel_key_counts.items() if count > 1}
+        duplicate_channels = sorted({channel for _, channel in duplicate_channel_keys})
         # Ignore empty contact_id in duplicate highlighting.
         duplicate_contacts = sorted(v for v, c in contact_counts.items() if c > 1 and v.strip() != "")
         empty_contact_count = contact_counts.get("", 0)
-        dup_channel_set = set(duplicate_channels)
         dup_contact_set = set(duplicate_contacts)
         # Mark each model according to whether it is a duplicate.
         for model in self.electrodes.values():
-            model.has_channel_duplicate = model.channel_index in dup_channel_set
+            model_key = (str(model.shank_id).strip(), model.channel_index)
+            model.has_channel_duplicate = model_key in duplicate_channel_keys
             model.has_contact_duplicate = model.contact_id in dup_contact_set
         for item in self.items.values():
             item._refresh_style()

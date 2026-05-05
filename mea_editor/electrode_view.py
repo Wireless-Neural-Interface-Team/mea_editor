@@ -8,6 +8,7 @@ It owns:
 """
 
 from __future__ import annotations
+import hashlib
 
 try:
     from PySide6.QtGui import QBrush, QColor, QFont, QPainterPath, QPen, QTransform
@@ -43,7 +44,7 @@ class ElectrodeView(QGraphicsPathItem):
         # ItemIgnoresTransformations keeps text at constant screen size when zooming.
         label_font = QFont()
         label_font.setPointSize(9)
-        self.label = QGraphicsSimpleTextItem(str(model.channel_index), self)
+        self.label = QGraphicsSimpleTextItem("", self)
         self.label.setBrush(QBrush(QColor("#e9edf2")))
         self.label.setFont(label_font)
         self.label.setTransform(QTransform.fromScale(1.0, 1.0))  # Readable in Cartesian Y.
@@ -53,6 +54,7 @@ class ElectrodeView(QGraphicsPathItem):
         self.contact_label.setFont(label_font)
         self.contact_label.setTransform(QTransform.fromScale(1.0, 1.0))
         self.contact_label.setFlag(QGraphicsItem.ItemIgnoresTransformations)
+        self._refresh_label()
         self.set_radius(model.radius)
         self.setPos(model.x, model.y)
         self._layout_labels()
@@ -64,9 +66,53 @@ class ElectrodeView(QGraphicsPathItem):
 
         Updates channel_index (center) and contact_id (below circle).
         """
-        self.label.setText(str(self.model.channel_index))
+        self.label.setText(self._channel_label_text())
         self.contact_label.setText(str(self.model.contact_id))
         self._layout_labels()
+
+    def _channel_label_text(self) -> str:
+        """
+        Build center label text using shank and channel index.
+
+        Format:
+        - with shank: "<shank>-<channel 3 digits>" (example: "1-002")
+        - without shank: "<channel 3 digits>"
+        """
+        channel = f"{int(self.model.channel_index):03d}"
+        shank = str(self.model.shank_id).strip()
+        return f"{shank}-{channel}" if shank else channel
+
+    def _color_for_shank(self) -> QColor:
+        """
+        Return a deterministic fill color for current shank_id.
+
+        The same shank id always maps to the same visible color.
+        """
+        shank = str(self.model.shank_id).strip()
+        if not shank:
+            return QColor("#3da5ff")
+        digest = hashlib.sha1(shank.encode("utf-8")).digest()
+        # Neutral/dark palette for shanks: browns, grays, charcoals, near-black.
+        # Red and yellow remain reserved for duplicate/selection states.
+        palette = [
+            QColor("#6b4f3a"),  # brown
+            QColor("#7a5a3f"),  # warm brown
+            QColor("#5a4636"),  # dark brown
+            QColor("#6a6a6a"),  # medium gray
+            QColor("#7a7f86"),  # cool gray
+            QColor("#585f66"),  # slate gray
+            QColor("#424242"),  # dark gray
+            QColor("#343a40"),  # charcoal
+            QColor("#2c2f33"),  # darker charcoal
+            QColor("#1f2328"),  # near-black
+            QColor("#2f7a52"),  # green
+            QColor("#2d6a4f"),  # deep green
+            QColor("#2a9d8f"),  # cyan-green
+            QColor("#2c7da0"),  # cyan-blue
+            QColor("#3a86ff"),  # blue
+            QColor("#4361ee"),  # deep blue
+        ]
+        return palette[digest[0] % len(palette)]
 
     def _view_scale(self) -> float:
         """
@@ -121,7 +167,7 @@ class ElectrodeView(QGraphicsPathItem):
         """
         Apply fill and outline colors based on state.
 
-        Priority: duplicate (red) > selected (yellow) > enabled (blue) > disabled (gray).
+        Priority: duplicate (red) > selected (yellow) > enabled (color by shank) > disabled (gray).
         """
         # Duplicate state overrides selection and enabled for visibility.
         is_duplicate = self.model.has_channel_duplicate or self.model.has_contact_duplicate
@@ -132,7 +178,7 @@ class ElectrodeView(QGraphicsPathItem):
             fill = QColor("#ffd447")
             outline = QColor("#f6f7f8")
         elif self.model.enabled:
-            fill = QColor("#3da5ff")
+            fill = self._color_for_shank()
             outline = QColor("#232b35")
         else:
             fill = QColor("#4f5761")
