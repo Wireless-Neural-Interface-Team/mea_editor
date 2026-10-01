@@ -5,7 +5,6 @@ GUI and library to create and modify MEA (Multi-Electrode Arrays).
 Arrays are saved in a native JSON format (`specification: "mea_editor"`, version `1.11`). Optional exports produce:
 
 - a [probeinterface](https://probeinterface.readthedocs.io/) JSON for [SpikeInterface](https://spikeinterface.readthedocs.io/)
-- an analysis XLSX (`channel`, `row`, `col`, …, plus an `orientation_markers` sheet)
 - a full array XLSX (electrodes, pads, orientation markers, attribute schema)
 
 **Multi-platform:** Windows, macOS, Linux.
@@ -120,7 +119,7 @@ Fields:
 
 Place one from the **Orientation marker** tab (**Add Orientation Marker**, then click the scene). Shape and size come from **Actions** on that tab. Several markers are allowed. They appear on both mapping views, without a map label. Nearby electrode and pad outside labels invert over the white fill so the text stays readable.
 
-They are stored in native JSON (`orientation_markers`) and written to the Excel / analysis workbooks (sheet `orientation_markers`, geometry only). SpikeInterface export omits them.
+They are stored in native JSON (`orientation_markers`) and written to the Excel workbook (sheet `orientation_markers`, geometry only). SpikeInterface export omits them.
 
 ## Electrode table
 
@@ -155,12 +154,11 @@ Older native files without `map_labels` open with the default labels. Missing `l
 
 Opening a probeinterface JSON exported by this editor restores pads from those annotations. Plain probeinterface files (no pad geometry) still open without pads. Label position and orientation are not part of this export (they stay in native JSON only).
 
-## XLSX exports
+## XLSX export
 
-- **Export for analysis...**: sheet `array`, starting with `channel` (Potentiostat ID), `row`, `col`, `shape`, `radius`, `width`, `height`, then `intan_id`, `si_channel` (SpikeInterface channel derived from INTAN ID), manufacturer / shank / `eid` / extras / linked `pad_id`, `pad_x`, `pad_y`, `pad_shape`. `si_channel` is empty when the INTAN ID cannot be converted. Sheet `orientation_markers` lists `marker_id`, `x`, `y`, `shape`, `radius`, `width`, `height`.
-- **Export array as XLSX...**: sheet `array` (full electrode table including extras), sheet `pads` (linked electrode identifiers, `si_channel`, extras, and pad geometry), sheet `orientation_markers` (`marker_id`, `x`, `y`, `shape`, `radius`, `width`, `height`), sheet `electrode_attributes` (schema with uniqueness). Geometry columns are `radius`, `width`, `height` (`circle` fills radius; `square` fills width and height with the side length; `rect` fills width and height independently)
+**Export array as XLSX...** writes sheet `array` (full electrode table including extras), sheet `pads` (linked electrode identifiers, `si_channel`, extras, and pad geometry), sheet `orientation_markers` (`marker_id`, `x`, `y`, `shape`, `radius`, `width`, `height`), sheet `electrode_attributes` (schema with uniqueness). Geometry columns are `radius`, `width`, `height` (`circle` fills radius; `square` fills width and height with the side length; `rect` fills width and height independently).
 
-`row` is electrode Y, `col` is electrode X. Label position and orientation are not written to either workbook.
+`row` is electrode Y, `col` is electrode X. Label position and orientation are not written to the workbook.
 
 ## Keyboard shortcuts
 
@@ -184,7 +182,6 @@ from mea_editor import (
     load_array_document,
     save_array_to_file,
     export_spikeinterface_json,
-    export_analysis_xlsx,
     export_array_xlsx,
 )
 

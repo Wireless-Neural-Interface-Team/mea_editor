@@ -1,4 +1,4 @@
-"""Round-trip checks for native save, SpikeInterface export, and XLSX."""
+"""Round-trip checks for native save, SpikeInterface export, and array XLSX."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from mea_editor.electrode_array_editor_io import (
     NATIVE_SPECIFICATION,
     NATIVE_VERSION,
     build_probeinterface_payload,
-    export_analysis_xlsx,
     export_array_xlsx,
     export_spikeinterface_json,
     load_array_document,
@@ -384,9 +383,7 @@ class IoRoundTripTests(unittest.TestCase):
     def test_xlsx_exports_include_pads_and_extras(self) -> None:
         electrodes, pads, schema = _sample_array()
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            analysis_path = str(Path(tmp) / "analysis.xlsx")
             array_path = str(Path(tmp) / "array.xlsx")
-            export_analysis_xlsx(analysis_path, electrodes, pads=pads, electrode_attributes=schema)
             export_array_xlsx(
                 array_path,
                 electrodes,
@@ -395,50 +392,6 @@ class IoRoundTripTests(unittest.TestCase):
                 si_units="um",
             )
             from openpyxl import load_workbook
-
-            analysis = load_workbook(analysis_path)
-            try:
-                analysis_sheet = analysis.active
-                self.assertEqual(
-                    [cell.value for cell in analysis_sheet[1]],
-                    [
-                        "channel",
-                        "row",
-                        "col",
-                        "shape",
-                        "radius",
-                        "width",
-                        "height",
-                        "intan_id",
-                        "si_channel",
-                        "manufacturer_id",
-                        "shank_id",
-                        "eid",
-                        "site_note",
-                        "pad_id",
-                        "pad_x",
-                        "pad_y",
-                        "pad_shape",
-                    ],
-                )
-                self.assertEqual(analysis_sheet["A2"].value, 7)
-                self.assertEqual(analysis_sheet["D2"].value, "rect")
-                self.assertEqual(analysis_sheet["E2"].value, None)
-                self.assertEqual(analysis_sheet["F2"].value, 24.0)
-                self.assertEqual(analysis_sheet["G2"].value, 16.0)
-                self.assertEqual(analysis_sheet["D3"].value, "square")
-                self.assertEqual(analysis_sheet["E3"].value, None)
-                self.assertEqual(analysis_sheet["F3"].value, 12.0)
-                self.assertEqual(analysis_sheet["G3"].value, 12.0)
-                self.assertEqual(analysis_sheet["I2"].value, 3)
-                self.assertEqual(analysis_sheet["L2"].value, 2)
-                self.assertEqual(analysis_sheet["M2"].value, "deep")
-                self.assertEqual(analysis_sheet["N2"].value, 1)
-                self.assertEqual(analysis_sheet["O2"].value, -30.0)
-                self.assertEqual(analysis_sheet["P2"].value, 20.0)
-                self.assertEqual(analysis_sheet["Q2"].value, "rect")
-            finally:
-                analysis.close()
 
             workbook = load_workbook(array_path)
             try:
@@ -515,7 +468,6 @@ class IoRoundTripTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             native_path = str(Path(tmp) / "array.json")
             si_path = str(Path(tmp) / "probe.json")
-            analysis_path = str(Path(tmp) / "analysis.xlsx")
             array_path = str(Path(tmp) / "array.xlsx")
             save_array_to_file(
                 native_path,
@@ -556,13 +508,6 @@ class IoRoundTripTests(unittest.TestCase):
             self.assertNotIn("label_position", dumped)
             self.assertNotIn("label_orientation", dumped)
 
-            export_analysis_xlsx(
-                analysis_path,
-                electrodes,
-                pads=pads,
-                electrode_attributes=schema,
-                orientation_markers=markers,
-            )
             export_array_xlsx(
                 array_path,
                 electrodes,
@@ -572,10 +517,13 @@ class IoRoundTripTests(unittest.TestCase):
             )
             from openpyxl import load_workbook
 
-            analysis = load_workbook(analysis_path)
+            workbook = load_workbook(array_path)
             try:
-                self.assertEqual(analysis.sheetnames, ["array", "orientation_markers"])
-                sheet = analysis["orientation_markers"]
+                self.assertEqual(
+                    workbook.sheetnames,
+                    ["array", "pads", "orientation_markers", "electrode_attributes"],
+                )
+                sheet = workbook["orientation_markers"]
                 self.assertEqual(
                     [cell.value for cell in sheet[1]],
                     ["marker_id", "x", "y", "shape", "radius", "width", "height"],
@@ -585,20 +533,10 @@ class IoRoundTripTests(unittest.TestCase):
                 self.assertEqual(sheet["D2"].value, "circle")
                 self.assertEqual(sheet["E2"].value, 6.0)
                 self.assertEqual(sheet["A3"].value, 2)
+                self.assertEqual(sheet["C3"].value, 80.0)
                 self.assertEqual(sheet["D3"].value, "square")
                 self.assertEqual(sheet["F3"].value, 30.0)
                 self.assertEqual(sheet["G3"].value, 30.0)
-            finally:
-                analysis.close()
-
-            workbook = load_workbook(array_path)
-            try:
-                self.assertEqual(
-                    workbook.sheetnames,
-                    ["array", "pads", "orientation_markers", "electrode_attributes"],
-                )
-                self.assertEqual(workbook["orientation_markers"]["A3"].value, 2)
-                self.assertEqual(workbook["orientation_markers"]["C3"].value, 80.0)
             finally:
                 workbook.close()
 
@@ -623,7 +561,6 @@ class IoRoundTripTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             native_path = str(Path(tmp) / "array.json")
             si_path = str(Path(tmp) / "probe.json")
-            analysis_path = str(Path(tmp) / "analysis.xlsx")
             array_path = str(Path(tmp) / "array.xlsx")
             save_array_to_file(
                 native_path,
@@ -659,13 +596,6 @@ class IoRoundTripTests(unittest.TestCase):
             self.assertNotIn("label_position", si_text)
             self.assertNotIn("label_orientation", si_text)
 
-            export_analysis_xlsx(
-                analysis_path,
-                electrodes,
-                pads=pads,
-                electrode_attributes=schema,
-                orientation_markers=markers,
-            )
             export_array_xlsx(
                 array_path,
                 electrodes,
@@ -675,12 +605,6 @@ class IoRoundTripTests(unittest.TestCase):
             )
             from openpyxl import load_workbook
 
-            analysis = load_workbook(analysis_path)
-            try:
-                analysis_headers = [cell.value for cell in analysis.active[1]]
-                marker_headers = [cell.value for cell in analysis["orientation_markers"][1]]
-            finally:
-                analysis.close()
             workbook = load_workbook(array_path)
             try:
                 array_headers = [cell.value for cell in workbook["array"][1]]
@@ -688,10 +612,6 @@ class IoRoundTripTests(unittest.TestCase):
                 marker_headers_full = [cell.value for cell in workbook["orientation_markers"][1]]
             finally:
                 workbook.close()
-        self.assertNotIn("label_position", analysis_headers)
-        self.assertNotIn("label_orientation", analysis_headers)
-        self.assertNotIn("label_position", marker_headers)
-        self.assertNotIn("label_orientation", marker_headers)
         self.assertNotIn("label_position", array_headers)
         self.assertNotIn("label_orientation", array_headers)
         self.assertNotIn("label_position", pad_headers)

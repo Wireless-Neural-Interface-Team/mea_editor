@@ -19,13 +19,13 @@ SpikeInterface export:
     - probe annotations = electrode attribute schema and visible map labels
       so a file exported from this editor can be reopened with less data loss
 
-XLSX exports:
-    analysis table (channel / row / col) and a full array workbook
-    (electrodes sheet + pads sheet + orientation-markers sheet + attribute
-    schema). Geometry uses radius / width / height (circle: radius; square:
-    width and height; rect: independent extents). Extra electrode attributes
-    follow the file schema on both electrode and pad sheets. Orientation
-    markers are Excel-only (not SpikeInterface contacts).
+XLSX export:
+    full array workbook (electrodes sheet + pads sheet + orientation-markers
+    sheet + attribute schema). Geometry uses radius / width / height
+    (circle: radius; square: width and height; rect: independent extents).
+    Extra electrode attributes follow the file schema on both electrode and
+    pad sheets. Orientation markers are Excel-only (not SpikeInterface
+    contacts).
 """
 
 from __future__ import annotations
@@ -1100,93 +1100,6 @@ def _write_orientation_marker_sheet(workbook, orientation_markers: list[Orientat
                 height,
             ]
         )
-
-
-def export_analysis_xlsx(
-    path: str,
-    electrodes: list[Electrode],
-    pads: list[Pad] | None = None,
-    electrode_attributes: list[AttributeSpec] | None = None,
-    orientation_markers: list[OrientationMarker] | None = None,
-) -> None:
-    """
-    Write the analysis table used by downstream mapping scripts.
-
-    The first four columns stay stable:
-    - channel: Potentiostat ID
-    - row: electrode y
-    - col: electrode x
-    - shape: electrode shape
-
-    Then radius / width / height (circle: radius; square: width and height
-    equal to the side; rect: independent width and height), INTAN ID,
-    `si_channel` (SpikeInterface channel derived from INTAN; empty if invalid),
-    manufacturer / shank / eid, extra attributes, and the first linked pad
-    (`pad_id`, `pad_x`, `pad_y`, `pad_shape`).
-
-    Orientation markers are written on a separate `orientation_markers` sheet
-    (`marker_id`, `x`, `y`, `shape`, `radius`, `width`, `height`). They are
-    not SpikeInterface contacts.
-
-    `channel` is the Potentiostat ID, not the SpikeInterface channel.
-    """
-    if not electrodes:
-        raise ValueError("No electrodes to export.")
-    Workbook = _require_openpyxl_workbook()
-    schema = _resolved_schema(electrodes, electrode_attributes)
-    extras = extra_specs(schema)
-    pad_by_eid = _first_pad_by_electrode(pads)
-
-    workbook = Workbook()
-    worksheet = workbook.active
-    worksheet.title = "array"
-    headers = [
-        "channel",
-        "row",
-        "col",
-        "shape",
-        "radius",
-        "width",
-        "height",
-        "intan_id",
-        "si_channel",
-        "manufacturer_id",
-        "shank_id",
-        "eid",
-        *[spec.key for spec in extras],
-        "pad_id",
-        "pad_x",
-        "pad_y",
-        "pad_shape",
-    ]
-    worksheet.append(headers)
-    for model in sorted(electrodes, key=lambda item: (item.potentiostat_id, item.eid)):
-        pad = pad_by_eid.get(model.eid)
-        radius, width, height = export_contact_sizes(model.shape, model.radius, model.height)
-        si_channel = try_intan_channel_id(model.intan_id)
-        row = [
-            model.potentiostat_id,
-            model.y,
-            model.x,
-            model.shape,
-            radius,
-            width,
-            height,
-            model.intan_id,
-            "" if si_channel is None else si_channel,
-            model.manufacturer_id,
-            model.shank_id,
-            int(model.eid),
-        ]
-        row.extend(_extra_values(model, extras))
-        if pad is None:
-            row.extend(["", "", "", ""])
-        else:
-            row.extend([int(pad.pad_id), float(pad.x), float(pad.y), pad.shape])
-        worksheet.append(row)
-    _write_orientation_marker_sheet(workbook, orientation_markers)
-    workbook.save(path)
-    workbook.close()
 
 
 def export_array_xlsx(

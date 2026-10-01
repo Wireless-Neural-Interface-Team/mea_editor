@@ -7,7 +7,7 @@ either, and is not a SpikeInterface contact.
 
 Geometry uses the same SpikeInterface shapes as electrodes and pads
 (circle, square, rect). It is persisted in native JSON and written to the
-Excel / analysis workbooks. SpikeInterface export omits it. Map-label side
+Excel workbook. SpikeInterface export omits it. Map-label side
 and rotation are native JSON only.
 """
 

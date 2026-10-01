@@ -12,6 +12,7 @@ from mea_editor.electrode import (
     map_label_item_pos,
     normalize_label_orientation,
     normalize_label_position,
+    outside_label_gap,
     rotated_label_item_aabb,
 )
 
@@ -74,6 +75,65 @@ class LabelOrientationTests(unittest.TestCase):
         )
         self.assertAlmostEqual(x, 2.0)
         self.assertAlmostEqual(y, -10.0)
+
+    def test_outside_gap_adds_a_space_on_the_long_axis(self) -> None:
+        self.assertEqual(outside_label_gap("left", 0, gap=2.0, space_w=3.0), 5.0)
+        self.assertEqual(outside_label_gap("right", 180, gap=2.0, space_w=3.0), 5.0)
+        self.assertEqual(outside_label_gap("above", 90, gap=2.0, space_w=3.0), 5.0)
+        self.assertEqual(outside_label_gap("below", 270, gap=2.0, space_w=3.0), 5.0)
+        self.assertEqual(outside_label_gap("above", 0, gap=2.0, space_w=3.0), 2.0)
+        self.assertEqual(outside_label_gap("below", 180, gap=2.0, space_w=3.0), 2.0)
+        self.assertEqual(outside_label_gap("left", 90, gap=2.0, space_w=3.0), 2.0)
+        self.assertEqual(outside_label_gap("right", 270, gap=2.0, space_w=3.0), 2.0)
+
+    def test_outside_offsets_include_space_width_when_needed(self) -> None:
+        left = map_label_item_pos(
+            "left",
+            half_x=10.0,
+            half_y=8.0,
+            text_w=6.0,
+            text_h=4.0,
+            gap=2.0,
+            orientation=0,
+            space_w=3.0,
+        )
+        right = map_label_item_pos(
+            "right",
+            half_x=10.0,
+            half_y=8.0,
+            text_w=6.0,
+            text_h=4.0,
+            gap=2.0,
+            orientation=180,
+            space_w=3.0,
+        )
+        above = map_label_item_pos(
+            "above",
+            half_x=10.0,
+            half_y=8.0,
+            text_w=6.0,
+            text_h=4.0,
+            gap=2.0,
+            orientation=90,
+            space_w=3.0,
+        )
+        below = map_label_item_pos(
+            "below",
+            half_x=10.0,
+            half_y=8.0,
+            text_w=6.0,
+            text_h=4.0,
+            gap=2.0,
+            orientation=270,
+            space_w=3.0,
+        )
+        self.assertEqual(left, (-21.0, 2.0))
+        self.assertAlmostEqual(right[0], 21.0)
+        self.assertAlmostEqual(right[1], -2.0)
+        self.assertAlmostEqual(above[0], 2.0)
+        self.assertAlmostEqual(above[1], 19.0)
+        self.assertAlmostEqual(below[0], -2.0)
+        self.assertAlmostEqual(below[1], -19.0)
 
 
 if __name__ == "__main__":

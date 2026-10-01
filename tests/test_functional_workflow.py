@@ -534,7 +534,6 @@ class FunctionalWorkflowTests(unittest.TestCase):
             folder = Path(tmp)
             native = folder / "array.json"
             si_path = folder / "si.json"
-            analysis = folder / "analysis.xlsx"
             full = folder / "array.xlsx"
             self.editor._save_array_to_file(str(native))
             payload = json.loads(native.read_text(encoding="utf-8"))
@@ -557,7 +556,6 @@ class FunctionalWorkflowTests(unittest.TestCase):
             self.assertEqual(self.editor.electrodes[0].extra.get("site_note"), "deep")
             self.assertIn("site_note", self.editor.visible_map_label_keys)
 
-            self.editor._export_analysis_to_xlsx(str(analysis))
             self.editor._export_matrix_to_xlsx(str(full))
             from mea_editor.electrode_array_editor_io import export_spikeinterface_json
 
@@ -573,23 +571,13 @@ class FunctionalWorkflowTests(unittest.TestCase):
             self.assertEqual(si_payload["specification"], "probeinterface")
             self.assertEqual(len(si_payload["probes"][0]["contact_positions"]), 4)
 
-            analysis_wb = load_workbook(analysis)
-            try:
-                self.assertIn("array", analysis_wb.sheetnames)
-                self.assertIn("orientation_markers", analysis_wb.sheetnames)
-                headers = [cell.value for cell in analysis_wb["array"][1]]
-                self.assertIn("channel", headers)
-                self.assertIn("si_channel", headers)
-                self.assertEqual(analysis_wb["orientation_markers"].max_row, 2)
-            finally:
-                analysis_wb.close()
-
             full_wb = load_workbook(full)
             try:
                 for name in ("array", "pads", "orientation_markers", "electrode_attributes"):
                     self.assertIn(name, full_wb.sheetnames)
                 self.assertEqual(full_wb["array"].max_row, 5)
                 self.assertEqual(full_wb["pads"].max_row, 5)
+                self.assertEqual(full_wb["orientation_markers"].max_row, 2)
             finally:
                 full_wb.close()
 
@@ -622,7 +610,6 @@ class FunctionalWorkflowTests(unittest.TestCase):
             "Save",
             "Save As...",
             "Export for SpikeInterface...",
-            "Export for analysis...",
             "Export array as XLSX...",
         ):
             self.assertIn(needed, file_texts)

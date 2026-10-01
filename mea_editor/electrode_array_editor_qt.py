@@ -91,7 +91,6 @@ from .electrode_array_dialogs import AddAttributeDialog, NewArrayDialog, NewArra
 from .electrode_table_window import ElectrodeTableWindow
 from .electrode_array_editor_io import (
     NATIVE_VERSION,
-    export_analysis_xlsx,
     export_array_xlsx,
     export_spikeinterface_json,
     format_intan_id,
@@ -879,10 +878,6 @@ class ElectrodeArrayEditorQt(QMainWindow):
         act_export_si.triggered.connect(self._menu_export_spikeinterface)
         file_menu.addAction(act_export_si)
 
-        act_export_analysis = QAction("Export for analysis...", self)
-        act_export_analysis.triggered.connect(self._menu_export_analysis)
-        file_menu.addAction(act_export_analysis)
-
         act_export_xlsx = QAction("Export array as XLSX...", self)
         act_export_xlsx.triggered.connect(self._menu_export_matrix_xlsx)
         file_menu.addAction(act_export_xlsx)
@@ -952,8 +947,8 @@ class ElectrodeArrayEditorQt(QMainWindow):
             "<p>GUI and library to create and modify Multi-Electrode Arrays.</p>"
             f"<p>Native file format: mea_editor {NATIVE_VERSION}</p>"
             "<p>Keep native JSON as the source of truth. SpikeInterface and XLSX "
-            "are exports. Orientation markers are saved natively and in Excel / "
-            "analysis; they are omitted from SpikeInterface. Label position and "
+            "are exports. Orientation markers are saved natively and in Excel; "
+            "they are omitted from SpikeInterface. Label position and "
             "orientation are native JSON only.</p>"
             "<p>License: MIT<br>"
             "Wireless Neural Interface Team</p>",
@@ -2406,37 +2401,6 @@ class ElectrodeArrayEditorQt(QMainWindow):
             "The attribute schema and map labels are kept in probe annotations.",
         )
 
-    def _menu_export_analysis(self) -> None:
-        """Menu handler for analysis XLSX export (channel, row, col)."""
-        if not self.electrodes:
-            QMessageBox.information(self, "Export for analysis", "No array to export.")
-            return
-        if not self._confirm_pairing_before_export():
-            return
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export for analysis",
-            "",
-            "Excel files (*.xlsx);;All files (*.*)",
-        )
-        if not path:
-            return
-        if not path.lower().endswith(".xlsx"):
-            path += ".xlsx"
-        try:
-            self._export_analysis_to_xlsx(path)
-        except ImportError as exc:
-            QMessageBox.critical(
-                self,
-                "Export for analysis",
-                f"Could not export XLSX:\n{exc}\n\nInstall with: pip install openpyxl",
-            )
-            return
-        except Exception as exc:
-            QMessageBox.critical(self, "Export for analysis", f"Could not export XLSX:\n{exc}")
-            return
-        QMessageBox.information(self, "Export for analysis", "Analysis table exported successfully.")
-
     def _menu_export_matrix_xlsx(self) -> None:
         """Menu handler for array export as XLSX."""
         if not self.electrodes:
@@ -2617,18 +2581,6 @@ class ElectrodeArrayEditorQt(QMainWindow):
         self.visible_map_label_keys = set(document.map_labels)
         self._set_attribute_schema(document.electrode_attributes, prune=False)
         self._set_array(document.electrodes, document.pads, document.orientation_markers)
-
-    def _export_analysis_to_xlsx(self, path: str) -> None:
-        """
-        Export the analysis table: channel, row, col, shape, identifiers, extras, pads.
-        """
-        export_analysis_xlsx(
-            path,
-            list(self.electrodes.values()),
-            pads=list(self.pads.values()),
-            electrode_attributes=self.attribute_schema,
-            orientation_markers=list(self.orientation_markers.values()),
-        )
 
     def _export_matrix_to_xlsx(self, path: str) -> None:
         """Export electrodes, pads, orientation markers, and the attribute schema into an XLSX workbook."""

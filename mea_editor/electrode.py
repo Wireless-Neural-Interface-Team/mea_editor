@@ -101,6 +101,30 @@ def rotated_label_item_aabb(
     return min(xs), min(ys), max(xs), max(ys)
 
 
+def outside_label_gap(
+    position: str,
+    orientation: int = DEFAULT_LABEL_ORIENTATION,
+    gap: float = LABEL_POSITION_GAP,
+    space_w: float = 0.0,
+) -> float:
+    """
+    Distance from the contact to the outside label AABB.
+
+    Adds one space-character width when the text's long axis is parallel to
+    the contact edge it sits against: left/right at 0° or 180°, and
+    above/below at 90° or 270°.
+    """
+    side = normalize_label_position(position)
+    degrees = normalize_label_orientation(orientation)
+    extra = 0.0
+    if space_w:
+        if side in ("left", "right") and degrees in (0, 180):
+            extra = space_w
+        elif side in ("above", "below") and degrees in (90, 270):
+            extra = space_w
+    return gap + extra
+
+
 def map_label_item_pos(
     position: str,
     half_x: float,
@@ -109,6 +133,7 @@ def map_label_item_pos(
     text_h: float,
     gap: float = LABEL_POSITION_GAP,
     orientation: int = DEFAULT_LABEL_ORIENTATION,
+    space_w: float = 0.0,
 ) -> tuple[float, float]:
     """
     Top-left of an outside map label in item coordinates.
@@ -116,9 +141,11 @@ def map_label_item_pos(
     Scene Y grows up. Labels use ItemIgnoresTransformations, so unrotated text
     extends down on screen from this origin (toward -Y in the scene).
     `orientation` is clockwise degrees in screen space (0 / 90 / 180 / 270).
+    `space_w` is the width of one space in the same units as `text_w`.
     """
     min_x, min_y, max_x, max_y = rotated_label_item_aabb(text_w, text_h, orientation)
     side = normalize_label_position(position)
+    gap = outside_label_gap(side, orientation, gap, space_w)
     if side == "above":
         return (-(min_x + max_x) / 2.0, half_y + gap - min_y)
     if side == "left":

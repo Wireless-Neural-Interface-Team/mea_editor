@@ -173,8 +173,15 @@ def overlay_label_parts(item, scale: float, metrics: QFontMetrics) -> list[Overl
         br = metrics.boundingRect(QRect(0, 0, 400, 400), flags, below)
         pw, ph = float(br.width()), float(br.height())
         degrees = orientation
+        space_w = float(max(0, metrics.horizontalAdvance(" "))) / scale
         x, y = map_label_item_pos(
-            position, half_x, half_y, pw / scale, ph / scale, orientation=degrees
+            position,
+            half_x,
+            half_y,
+            pw / scale,
+            ph / scale,
+            orientation=degrees,
+            space_w=space_w,
         )
         parts.append(OverlayLabelPart(QPointF(x, y), pw, ph, degrees, below, True, False))
     return parts
