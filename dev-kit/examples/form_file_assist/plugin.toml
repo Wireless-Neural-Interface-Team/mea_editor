@@ -1,0 +1,10 @@
+[plugin]
+id = "example_form_file_assist"
+version = "1.0.0"
+name = "Form file assist"
+description = "Suggests draft field values when a File attribute is chosen in Add/Edit."
+api_version = 1
+entry = "main.py"
+placement = "entity_tab"
+selection_mode = "optional"
+# Targets every table by default. Narrow with entity_keys / [[plugin.when]] as needed.

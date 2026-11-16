@@ -1,0 +1,6 @@
+# Development dependencies (lint/tests/tooling) for THIS plugin project.
+# Runtime dependencies must be declared in requirements.txt.
+-r requirements.txt
+
+# Local SDK (standalone kit):
+-e ./neurorehab_plugin

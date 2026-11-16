@@ -1,0 +1,11 @@
+[plugin]
+id = "example_persistent"
+version = "1.0.0"
+name = "Persistent buttons"
+description = "Buttons always visible; enabled when one row is selected."
+api_version = 1
+entry = "main.py"
+selection_mode = "optional"
+# Default (omit selection_ui): rebuild — build_ui re-runs on selection so
+# labels can show the selected record id. Prefer selection_ui = "enable"
+# when buttons are static and only need setEnabled (faster row changes).

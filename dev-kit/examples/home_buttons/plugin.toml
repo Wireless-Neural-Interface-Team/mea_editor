@@ -1,0 +1,12 @@
+[plugin]
+id = "example_home"
+version = "1.0.0"
+name = "Home demo"
+description = "Persistent button on the Home tab; optional read access to a table."
+api_version = 1
+entry = "main.py"
+placement = "home"
+selection_mode = "optional"
+# Tables this Home plugin may read (intersected with the user's view rights).
+# Omit for UI-only buttons with no row data.
+# entity_keys = ["mea"]

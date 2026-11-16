@@ -1,0 +1,9 @@
+[plugin]
+id = "example_worker_window"
+version = "1.0.0"
+name = "Worker window"
+description = "Opens a custom Qt window in the worker on button click."
+api_version = 1
+entry = "main.py"
+placement = "record_panel"
+selection_mode = "single"

@@ -1,0 +1,9 @@
+[plugin]
+id = "example_standalone_gui"
+version = "1.0.0"
+name = "Standalone GUI"
+description = "Opens a PyQt window without row selection."
+api_version = 1
+entry = "main.py"
+placement = "entity_tab"
+selection_mode = "optional"

@@ -1,0 +1,15 @@
+[plugin]
+# Dev checkout lives in dev-kit/. The published id is the catalog name.
+id = "mea_editor"
+version = "0.2.0"
+name = "Mea Mapping Editor"
+description = "Open a MEA mapping locally for viewing or edition. Saves stay on this computer and are not written back to the database. Upload the new version yourself."
+api_version = 1
+entry = "main.py"
+placement = "entity_tab"
+selection_mode = "optional"
+# Subtype gating is applied in build_ui (gray button, still visible).
+selection_ui = "rebuild"
+
+# Match table key or label (case-insensitive).
+entity_keys = ["mapping", "mappings", "component", "components"]

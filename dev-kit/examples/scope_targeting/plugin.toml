@@ -1,0 +1,17 @@
+[plugin]
+id = "example_scope"
+version = "1.0.0"
+name = "Scoped plugin"
+description = "Visible only on MEA table, MEA64 sub-type, active status."
+api_version = 1
+entry = "main.py"
+placement = "entity_tab"
+selection_mode = "one_or_more"
+entity_keys = ["mea"]
+
+[[plugin.when]]
+variant_keys = ["mea64"]
+
+[[plugin.when.fields]]
+key = "status"
+equals = "active"

@@ -40,6 +40,7 @@ try:
         QFormLayout,
         QFrame,
         QGraphicsItem,
+        QGraphicsScene,
         QGraphicsView,
         QGroupBox,
         QHBoxLayout,
@@ -117,6 +118,7 @@ from .electrode import (
 from .electrode_array_view import ElectrodeArrayView
 from .electrode_view import ElectrodeView
 from .grid_scene import GridScene
+from .mapping_cloud import MappingCloudItem
 from .orientation_marker import (
     DEFAULT_MARKER_RADIUS,
     DEFAULT_MARKER_SHAPE,
@@ -133,6 +135,7 @@ from .pad import (
 )
 from .pad_layout import layout_pads_around_electrodes
 from .pad_view import PadView
+from .view_style import electrode_fill_for_shank, pad_fill_for_shank
 
 # Extra scene space around electrodes to allow panning/scrollbars.
 DEFAULT_SCENE_MARGIN = 100.0
@@ -179,8 +182,11 @@ class ElectrodeArrayEditorQt(QMainWindow):
     - handles commands (edit/move/save/open/undo/redo).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, view_only: bool = False) -> None:
         super().__init__()
+        self._view_only = view_only
+        self._skip_startup = view_only
+        self._edit_launcher = None
         self.setWindowTitle(f"{APP_NAME} v{__version__}")
         self.resize(1600, 800)
         self.current_file_path: str | None = None
@@ -224,6 +230,10 @@ class ElectrodeArrayEditorQt(QMainWindow):
         self._pad_combo_sig: tuple | None = None
         self._pad_add_combo_sig: tuple | None = None
         self._defer_rubber_band_selection = False
+        self._electrode_cloud: MappingCloudItem | None = None
+        self._pad_cloud: MappingCloudItem | None = None
+        self._loading = False
+        self._loading_label: QLabel | None = None
 
         self.scene = GridScene(self)
         self.scene.set_axes_provider(self._grid_axes)
@@ -239,8 +249,14 @@ class ElectrodeArrayEditorQt(QMainWindow):
         self.pads_map_view.set_activated_callback(lambda: self._set_active_map_view(self.pads_map_view))
 
         self._build_ui()
-        self._build_menu()
-        self._clean_state = self._capture_state()
+        if self._view_only:
+            self.menuBar().hide()
+            self.statusBar().hide()
+            self._clean_state = None
+            self._update_title()
+        else:
+            self._build_menu()
+            self._clean_state = self._capture_state()
         self._startup_done = False
         self._preload_thread: threading.Thread | None = None
         self._preload_started = False
@@ -287,7 +303,10 @@ class ElectrodeArrayEditorQt(QMainWindow):
         super().showEvent(event)
         if not self._startup_done:
             self._startup_done = True
-            QTimer.singleShot(0, self._startup_workflow)
+            if self._skip_startup:
+                QTimer.singleShot(0, self._fit_all_views)
+            else:
+                QTimer.singleShot(0, self._startup_workflow)
         else:
             QTimer.singleShot(0, self._fit_all_views)
 
@@ -319,13 +338,29 @@ class ElectrodeArrayEditorQt(QMainWindow):
         """
         central = QWidget(self)
         self.setCentralWidget(central)
-        outer = QHBoxLayout(central)
+        outer = QVBoxLayout(central)
         outer.setContentsMargins(8, 8, 8, 8)
         outer.setSpacing(0)
 
+        self._view_bar = QWidget()
+        view_bar_layout = QHBoxLayout(self._view_bar)
+        view_bar_layout.setContentsMargins(0, 0, 0, 8)
+        view_bar_layout.setSpacing(8)
+        self._edit_button = QPushButton("Edit")
+        self._edit_button.setAutoDefault(False)
+        self._edit_button.setToolTip("Open this mapping in the MEA editor.")
+        self._edit_button.clicked.connect(self._edit_loaded_mapping)
+        view_bar_layout.addWidget(self._edit_button)
+        self._loading_label = QLabel("Loading mapping…")
+        self._loading_label.setStyleSheet("color: #d3dbe4; font-size: 14px;")
+        view_bar_layout.addWidget(self._loading_label)
+        view_bar_layout.addStretch(1)
+        self._view_bar.hide()
+        outer.addWidget(self._view_bar)
+
         splitter = QSplitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(False)
-        outer.addWidget(splitter)
+        outer.addWidget(splitter, stretch=1)
 
         self.map_splitter = QSplitter(Qt.Horizontal)
         self.map_splitter.setChildrenCollapsible(False)
@@ -335,7 +370,16 @@ class ElectrodeArrayEditorQt(QMainWindow):
         self.map_splitter.setStretchFactor(1, 1)
         self.map_splitter.setSizes([560, 560])
         splitter.addWidget(self.map_splitter)
-        splitter.addWidget(self._build_side_panel())
+        self._main_splitter = splitter
+        if self._view_only:
+            self._side_panel = None
+            self._view_bar.show()
+            self._set_loading_visible(True)
+            splitter.setStretchFactor(0, 1)
+            return
+
+        self._side_panel = self._build_side_panel()
+        splitter.addWidget(self._side_panel)
         splitter.setStretchFactor(0, 4)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([1120, 340])
@@ -344,6 +388,40 @@ class ElectrodeArrayEditorQt(QMainWindow):
             "Wheel: zoom  |  Middle-drag: pan  |  Del: delete  |  Ctrl+Z: undo"
         )
         self.statusBar().addPermanentWidget(QLabel(f"v{__version__}"))
+
+    def set_edit_launcher(self, launcher) -> None:
+        """Called by the plugin viewer. ``launcher(path)`` opens the full editor."""
+        self._edit_launcher = launcher
+
+    def apply_view_only(self) -> None:
+        """Hide every editor control except the two mapping views and Edit."""
+        self._view_only = True
+        self._skip_startup = True
+        self.menuBar().hide()
+        self.statusBar().hide()
+        self._side_panel.setMinimumWidth(0)
+        self._side_panel.setMaximumWidth(0)
+        self._side_panel.hide()
+        self._view_bar.show()
+        self._main_splitter.setSizes([10000, 0])
+        self._main_splitter.setHandleWidth(0)
+        handle = self._main_splitter.handle(1)
+        if handle is not None:
+            handle.setEnabled(False)
+        for action in self.findChildren(QAction):
+            action.setEnabled(False)
+        self._update_title()
+
+    def _edit_loaded_mapping(self) -> None:
+        """Open the full editor on the mapping currently shown."""
+        path = self.current_file_path
+        if not path:
+            QMessageBox.information(self, "Edit", "No mapping is loaded.")
+            return
+        if self._edit_launcher is None:
+            QMessageBox.information(self, "Edit", "The MEA editor cannot be started from here.")
+            return
+        self._edit_launcher(path)
 
     def _build_side_panel(self) -> QWidget:
         """Inspector: array, selection, then electrode/pad/marker parameterization."""
@@ -1374,6 +1452,11 @@ class ElectrodeArrayEditorQt(QMainWindow):
 
     def _mark_clean(self) -> None:
         """Remember the last saved/loaded state for the dirty flag."""
+        if self._view_only:
+            self._clean_state = None
+            self.is_dirty = False
+            self._update_title()
+            return
         self._clean_state = self._capture_state()
         self.is_dirty = False
         self._update_title()
@@ -1407,6 +1490,8 @@ class ElectrodeArrayEditorQt(QMainWindow):
         fill_electrodes_extras(models, self.attribute_schema, prune=False)
         eid_fixes, pad_id_fixes = ensure_unique_model_ids(models, pads)
         marker_id_fixes = ensure_unique_marker_ids(orientation_markers)
+        if self._view_only:
+            refresh_status_flags(models, pads, self.attribute_schema)
         if (eid_fixes or pad_id_fixes or marker_id_fixes) and not self._is_restoring_state:
             parts: list[str] = []
             if eid_fixes:
@@ -1430,7 +1515,11 @@ class ElectrodeArrayEditorQt(QMainWindow):
         self._auto_selected_electrode_eids.clear()
         self._auto_selected_pad_ids.clear()
         self._is_mutating_scene = True
+        self.setUpdatesEnabled(False)
         try:
+            self._electrode_cloud = None
+            self._pad_cloud = None
+            self.scene.label_contacts_in = None
             self.scene.clear()
             self.electrodes.clear()
             self.items.clear()
@@ -1438,28 +1527,122 @@ class ElectrodeArrayEditorQt(QMainWindow):
             self.pad_items.clear()
             self.orientation_markers.clear()
             self.marker_items.clear()
-            for model in models:
-                self._add_electrode_item(model)
-            for pad in pads:
-                self._add_pad_item(pad)
-            for marker in orientation_markers:
-                self._add_marker_item(marker)
+            if self._view_only:
+                self._install_view_clouds(models, pads, orientation_markers)
+            else:
+                # Inserting into the BSP index one contact at a time is what
+                # makes a large mapping take minutes before the first pixel.
+                self.scene.setItemIndexMethod(QGraphicsScene.NoIndex)
+                try:
+                    for model in models:
+                        self._add_electrode_item(model)
+                    for pad in pads:
+                        self._add_pad_item(pad)
+                    for marker in orientation_markers:
+                        self._add_marker_item(marker)
+                finally:
+                    self.scene.setItemIndexMethod(QGraphicsScene.BspTreeIndex)
             self.scene.has_orientation_markers = bool(self.orientation_markers)
             self._invalidate_geometry_caches()
             self._pad_combo_sig = None
             self._pad_add_combo_sig = None
             self._ensure_scene_rect(extra=visible if not visible.isNull() else None)
             self._restore_map_cameras(cameras)
+            self._is_mutating_scene = False
+            if self._view_only:
+                self._update_title()
+            else:
+                self._update_duplicate_flags()
+                self._refresh_pad_electrode_combo()
+                self._refresh_pad_add_electrode_combo()
+                self._refresh_panel_values()
+                self.si_units_edit.setText(self.si_units)
+                self._update_title()
+                self._sync_electrode_table(reload_data=True)
         finally:
             self._is_mutating_scene = False
-        self._update_duplicate_flags()
-        self._refresh_pad_electrode_combo()
-        self._refresh_pad_add_electrode_combo()
-        self._refresh_panel_values()
-        self.si_units_edit.setText(self.si_units)
-        self._update_title()
-        self._sync_electrode_table(reload_data=True)
+            self.setUpdatesEnabled(True)
         QTimer.singleShot(0, self._refresh_label_layouts)
+
+    def _set_loading_visible(self, visible: bool) -> None:
+        """Show or hide the viewer status while the mapping file is still on its way."""
+        self._loading = bool(visible)
+        if self._loading_label is not None:
+            self._loading_label.setVisible(self._loading)
+        self._update_title()
+
+    def _install_view_clouds(
+        self,
+        models: list[Electrode],
+        pads: list[Pad],
+        orientation_markers: list[OrientationMarker],
+    ) -> None:
+        """Store models and paint both maps from one item each.
+
+        The viewer does not build a graphics item per contact. That insert is
+        what left the two views empty for minutes on a large mapping.
+        """
+        for model in models:
+            self.electrodes[model.eid] = model
+        for pad in pads:
+            self.pads[pad.pad_id] = pad
+        for marker in orientation_markers:
+            self._add_marker_item(marker)
+        electrodes = self.electrodes
+
+        def pad_shank(pad: Pad, electrodes=electrodes) -> str:
+            electrode = electrodes.get(pad.electrode_eid)
+            return "" if electrode is None else str(electrode.shank_id)
+
+        def pad_label(pad: Pad, electrodes=electrodes) -> tuple[str, str]:
+            electrode = electrodes.get(pad.electrode_eid)
+            if electrode is None:
+                return "?", "?"
+            return self._labels_for_electrode(electrode)
+
+        self._electrode_cloud = self._add_mapping_cloud(
+            models,
+            shank_of=lambda model: model.shank_id,
+            fill_for_shank=electrode_fill_for_shank,
+            label_for=self._labels_for_electrode,
+            z_value=10,
+        )
+        self._pad_cloud = self._add_mapping_cloud(
+            pads,
+            shank_of=pad_shank,
+            fill_for_shank=pad_fill_for_shank,
+            label_for=pad_label,
+            z_value=9,
+        )
+        self.scene.label_contacts_in = self._cloud_label_contacts
+
+    def _add_mapping_cloud(
+        self,
+        models,
+        *,
+        shank_of,
+        fill_for_shank,
+        label_for,
+        z_value: float,
+    ) -> MappingCloudItem | None:
+        if not models:
+            return None
+        item = MappingCloudItem(
+            models,
+            shank_of=shank_of,
+            fill_for_shank=fill_for_shank,
+            label_for=label_for,
+        )
+        item.setZValue(z_value)
+        self.scene.addItem(item)
+        return item
+
+    def _cloud_label_contacts(self, view, rect, scale: float):
+        """Labels for the cloud under one mapping camera."""
+        cloud = self._electrode_cloud if view is self.electrode_view else self._pad_cloud
+        if cloud is None:
+            return []
+        return cloud.label_contacts(rect, scale)
 
     def _add_electrode_item(self, model: Electrode) -> ElectrodeView:
         """Add one electrode to the scene without rebuilding existing items."""
@@ -2252,6 +2435,15 @@ class ElectrodeArrayEditorQt(QMainWindow):
 
     def _update_title(self) -> None:
         """Update window title with version, file path, and asterisk if modified."""
+        if self._view_only:
+            if self._loading:
+                self.setWindowTitle("MEA mapping — loading…")
+            elif self.current_file_path:
+                filename = self.current_file_path.replace("\\", "/").rsplit("/", 1)[-1]
+                self.setWindowTitle(f"MEA mapping - {filename}")
+            else:
+                self.setWindowTitle("MEA mapping")
+            return
         dirty_suffix = " *" if self.is_dirty else ""
         versioned_name = f"{APP_NAME} v{__version__}"
         if self.current_file_path:
@@ -2320,12 +2512,24 @@ class ElectrodeArrayEditorQt(QMainWindow):
         )
         if not path:
             return False
+        return self.load_local_file(path)
+
+    def load_local_file(self, path: str) -> bool:
+        """Load a JSON array from a local path.
+
+        Save and Save As keep writing that local file. Nothing is sent back
+        to a database.
+        """
         try:
             self._load_array_from_file(path)
         except Exception as exc:
+            if self._view_only:
+                self._set_loading_visible(False)
             QMessageBox.critical(self, "Load error", f"Could not load file:\n{exc}")
             return False
         self.current_file_path = path
+        if self._view_only:
+            self._set_loading_visible(False)
         self._mark_clean()
         self._fit_all_views()
         self.raise_()
@@ -2733,6 +2937,8 @@ class ElectrodeArrayEditorQt(QMainWindow):
 
     def _schedule_panel_refresh(self) -> None:
         """Rebuild the inspector once after a burst of selection changes."""
+        if self._view_only:
+            return
         if (
             self._is_restoring_state
             or self._is_mutating_scene
@@ -3054,6 +3260,8 @@ class ElectrodeArrayEditorQt(QMainWindow):
     def _set_attribute_schema(self, schema: list[AttributeSpec], *, prune: bool) -> None:
         """Replace the file-level schema and rebuild the electrode attribute panel."""
         self.attribute_schema = list(schema)
+        if self._view_only:
+            return
         fill_electrodes_extras(self.electrodes.values(), self.attribute_schema, prune=prune)
         self._rebuild_attribute_fields()
         self._rebuild_map_label_controls()
@@ -3377,7 +3585,7 @@ class ElectrodeArrayEditorQt(QMainWindow):
         Items selected only because their associated counterpart is selected
         are not deleted on their own. Orientation markers are never auto-selected.
         """
-        if self._is_adding():
+        if self._view_only or self._is_adding():
             return
         electrodes, pads, markers = self._user_selected_classified_items()
         if not electrodes and not pads and not markers:
@@ -3983,22 +4191,42 @@ class ElectrodeArrayEditorQt(QMainWindow):
         )
 
 
-def run_app() -> None:
+def run_app(
+    path: str | None = None,
+    *,
+    on_ready=None,
+    view_only: bool = False,
+    skip_startup: bool = False,
+) -> None:
     """
     Application entry point.
 
     Creates QApplication, ElectrodeArrayEditorQt window, shows and runs event loop.
+    When ``path`` is set, that local JSON is loaded after the window is shown.
+    File > Save still writes that local file only.
+
+    ``view_only`` keeps the two mapping views and an Edit button.
+    ``on_ready`` is called with the window after it is shown, before the event
+    loop. The plugin uses it to receive a mapping path without a second process.
     """
     app = QApplication([])
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
     app.setOrganizationName("Wireless Neural Interface Team")
-    win = ElectrodeArrayEditorQt()
+    win = ElectrodeArrayEditorQt(view_only=view_only)
+    if not view_only and (skip_startup or path):
+        win._skip_startup = True
     win.show()
     win.raise_()
     win.activateWindow()
+    if on_ready is not None:
+        on_ready(win)
+    elif path:
+        QTimer.singleShot(0, lambda: win.load_local_file(path))
     app.exec()
 
 
 if __name__ == "__main__":
-    run_app()
+    import sys
+
+    run_app(sys.argv[1] if len(sys.argv) > 1 else None)

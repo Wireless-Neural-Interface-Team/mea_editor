@@ -1,0 +1,11 @@
+[plugin]
+id = "example_outgoing"
+version = "1.0.0"
+name = "Outgoing references"
+description = "Read attributes/files of records referenced by the selection (single or multi-reference)."
+api_version = 1
+entry = "main.py"
+placement = "record_panel"
+selection_mode = "single"
+run_trigger = "on_select"
+entity_keys = ["experience"]

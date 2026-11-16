@@ -1,0 +1,7 @@
+.venv/
+.python/
+.uv-cache/
+tools/
+__pycache__/
+*.pyc
+publish/

@@ -1,0 +1,9 @@
+[plugin]
+id = "example_useless_website"
+version = "1.0.0"
+name = "Useless Website"
+description = "Opens a window that loads The Useless Web (theuselessweb.com)."
+api_version = 1
+entry = "main.py"
+placement = "entity_tab"
+selection_mode = "optional"

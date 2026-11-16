@@ -1,0 +1,10 @@
+[plugin]
+id = "example_on_select"
+version = "1.0.0"
+name = "On-select panel"
+description = "Summary button in Information panel when a row is selected."
+api_version = 1
+entry = "main.py"
+placement = "record_panel"
+selection_mode = "single"
+run_trigger = "on_select"

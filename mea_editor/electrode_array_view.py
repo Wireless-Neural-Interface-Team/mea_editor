@@ -632,17 +632,22 @@ class ElectrodeArrayView(QGraphicsView):
         scale = abs(self.transform().m11())
         if scale <= 0:
             return
-        contacts = [
-            item
-            for item in self.items(self.viewport().rect())
-            if getattr(item, "_label_half_extents", None) is not None
-        ]
+        scene = self.scene()
+        provider = getattr(scene, "label_contacts_in", None) if scene is not None else None
+        if callable(provider):
+            scene_rect = self.mapToScene(self.viewport().rect()).boundingRect()
+            contacts = list(provider(self, scene_rect, scale))
+        else:
+            contacts = [
+                item
+                for item in self.items(self.viewport().rect())
+                if getattr(item, "_label_half_extents", None) is not None
+            ]
         if not contacts:
             return
         font = self._map_label_font
         metrics = QFontMetrics(font)
         flags = int(Qt.AlignLeft | Qt.AlignTop | Qt.TextDontClip)
-        scene = self.scene()
         contrast_ok = bool(scene is None or getattr(scene, "has_orientation_markers", False))
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, False)
