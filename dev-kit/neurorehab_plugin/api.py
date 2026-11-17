@@ -24,16 +24,20 @@ security constraints on every remote call:
 
 from __future__ import annotations
 
-from typing import Any, NamedTuple
+import os
+from typing import Any, Callable, NamedTuple
 
 from neurorehab_plugin.context import PluginContext, PluginRecord
-from neurorehab_plugin.errors import PluginWriteForbiddenError
+from neurorehab_plugin.errors import PluginApiError, PluginWriteForbiddenError
 from neurorehab_plugin.local_files import (
+    allocate_plugin_download,
     file_display_name,
     open_local_path,
     pump_gui_events,
-    save_bytes_to_temp,
 )
+
+_INVOKE_BATCH_LIMIT = 50
+TransferProgress = Callable[[int, int | None, str], None]
 from neurorehab_plugin.script_launcher import launch_plugin_script
 from neurorehab_plugin.transport import PluginTransport
 
@@ -368,6 +372,31 @@ class PluginApi:
             access_token,
             plugin_id=context.plugin_id,
         )
+        self._on_transfer_progress: TransferProgress | None = None
+
+    def set_transfer_progress_callback(
+        self,
+        callback: TransferProgress | None,
+    ) -> None:
+        """Report streamed file downloads to the host activity card.
+
+        The worker installs this. Plugin code does not need to call it.
+        """
+        self._on_transfer_progress = callback
+
+    def _report_transfer(
+        self,
+        current: int,
+        total: int | None,
+        label: str,
+    ) -> None:
+        callback = self._on_transfer_progress
+        if callback is None:
+            return
+        try:
+            callback(int(current), None if total is None else int(total), str(label or ""))
+        except Exception:
+            return
 
     def close(self) -> None:
         """Close the underlying HTTP connection (idempotent)."""
@@ -520,6 +549,30 @@ class PluginApi:
         )
         return list((response or {}).get("results") or [])
 
+    def _invoke_all(self, calls: list[dict[str, Any]]) -> list[Any]:
+        """Run ``calls`` through :meth:`invoke_batch`, chunked at 50.
+
+        Raises:
+            PluginApiError: A call failed or the server returned fewer results
+                than calls.
+        """
+        if not calls:
+            return []
+        collected: list[Any] = []
+        for start in range(0, len(calls), _INVOKE_BATCH_LIMIT):
+            chunk = calls[start : start + _INVOKE_BATCH_LIMIT]
+            items = self.invoke_batch(chunk)
+            if len(items) != len(chunk):
+                raise PluginApiError("Incomplete plugin batch response.")
+            for item in items:
+                if not isinstance(item, dict) or not item.get("ok", False):
+                    message = ""
+                    if isinstance(item, dict):
+                        message = str(item.get("error") or "")
+                    raise PluginApiError(message or "Plugin batch call failed.")
+                collected.append(item.get("result"))
+        return collected
+
     def list_entity_defs(self) -> list[dict[str, Any]]:
         """Return the list of entity (table) definitions visible to the plugin."""
         rows = self._invoke("list_entity_defs") or []
@@ -657,7 +710,7 @@ class PluginApi:
         are the returned dict's ``files``. Pass any of those file dicts to
         :meth:`download_file`, :meth:`save_file_to_temp`, or :meth:`open_file`.
 
-        Read-only: this only calls :meth:`list_folders` and :meth:`list_files`.
+        Read-only: folders and files are loaded in one batch request.
         Trash rows stay hidden. The record must be inside the plugin scope.
 
         Args:
@@ -671,8 +724,23 @@ class PluginApi:
             ``name``, ``relative_path``, ``parent_folder_id``, ``folders``,
             and ``files``.
         """
-        folders = self.list_folders(record_id, field_key, entity_id=entity_id)
-        files = self.list_files(record_id, field_key, entity_id=entity_id)
+        entity = self._entity_id(entity_id)
+        folder_rows, file_rows = self._invoke_all(
+            [
+                {
+                    "op": "list_record_folders",
+                    "args": [int(record_id), field_key],
+                    "kwargs": {"only_deleted": False, "entity_id": entity},
+                },
+                {
+                    "op": "list_record_files_for_field",
+                    "args": [int(record_id), field_key],
+                    "kwargs": {"only_deleted": False, "entity_id": entity},
+                },
+            ]
+        )
+        folders = [dict(row) for row in (folder_rows or [])]
+        files = [dict(row) for row in (file_rows or [])]
         tree = build_folder_tree(folders, files)
         tree["field_key"] = str(field_key)
         return tree
@@ -699,9 +767,22 @@ class PluginApi:
         Returns:
             Concatenated list of folder metadata dicts across all fields.
         """
+        if not field_keys:
+            return []
+        entity = self._entity_id(entity_id)
+        results = self._invoke_all(
+            [
+                {
+                    "op": "list_record_folders",
+                    "args": [int(record_id), field_key],
+                    "kwargs": {"only_deleted": False, "entity_id": entity},
+                }
+                for field_key in field_keys
+            ]
+        )
         rows: list[dict[str, Any]] = []
-        for field_key in field_keys:
-            rows.extend(self.list_folders(record_id, field_key, entity_id=entity_id))
+        for result in results:
+            rows.extend(dict(row) for row in (result or []))
         return rows
 
     def list_files_for_field_keys(
@@ -721,9 +802,22 @@ class PluginApi:
         Returns:
             Concatenated list of file metadata dicts across all fields.
         """
+        if not field_keys:
+            return []
+        entity = self._entity_id(entity_id)
+        results = self._invoke_all(
+            [
+                {
+                    "op": "list_record_files_for_field",
+                    "args": [int(record_id), field_key],
+                    "kwargs": {"only_deleted": False, "entity_id": entity},
+                }
+                for field_key in field_keys
+            ]
+        )
         rows: list[dict[str, Any]] = []
-        for field_key in field_keys:
-            rows.extend(self.list_files(record_id, field_key, entity_id=entity_id))
+        for result in results:
+            rows.extend(dict(row) for row in (result or []))
         return rows
 
     def list_files_for_records(
@@ -741,13 +835,28 @@ class PluginApi:
             List of ``(record, file_row)`` pairs, preserving the record each
             file belongs to.
         """
-        pairs: list[tuple[PluginRecord, dict[str, Any]]] = []
+        if not records or not field_keys:
+            return []
+        calls: list[dict[str, Any]] = []
+        owners: list[PluginRecord] = []
         for record in records:
             for field_key in field_keys:
-                for file_row in self.list_files(
-                    record.id, field_key, entity_id=record.entity_id
-                ):
-                    pairs.append((record, file_row))
+                calls.append(
+                    {
+                        "op": "list_record_files_for_field",
+                        "args": [int(record.id), field_key],
+                        "kwargs": {
+                            "only_deleted": False,
+                            "entity_id": int(record.entity_id),
+                        },
+                    }
+                )
+                owners.append(record)
+        results = self._invoke_all(calls)
+        pairs: list[tuple[PluginRecord, dict[str, Any]]] = []
+        for record, result in zip(owners, results):
+            for file_row in result or []:
+                pairs.append((record, dict(file_row)))
         return pairs
 
     def list_folders_for_records(
@@ -765,13 +874,28 @@ class PluginApi:
             List of ``(record, folder_row)`` pairs, preserving the record
             each folder belongs to.
         """
-        pairs: list[tuple[PluginRecord, dict[str, Any]]] = []
+        if not records or not field_keys:
+            return []
+        calls: list[dict[str, Any]] = []
+        owners: list[PluginRecord] = []
         for record in records:
             for field_key in field_keys:
-                for folder_row in self.list_folders(
-                    record.id, field_key, entity_id=record.entity_id
-                ):
-                    pairs.append((record, folder_row))
+                calls.append(
+                    {
+                        "op": "list_record_folders",
+                        "args": [int(record.id), field_key],
+                        "kwargs": {
+                            "only_deleted": False,
+                            "entity_id": int(record.entity_id),
+                        },
+                    }
+                )
+                owners.append(record)
+        results = self._invoke_all(calls)
+        pairs: list[tuple[PluginRecord, dict[str, Any]]] = []
+        for record, result in zip(owners, results):
+            for folder_row in result or []:
+                pairs.append((record, dict(folder_row)))
         return pairs
 
     def download_bytes(self, logical_key: str) -> bytes:
@@ -804,17 +928,79 @@ class PluginApi:
             raise ValueError("Missing file_path.")
         return self.download_bytes(logical_key)
 
+    def find_files(
+        self,
+        record_id: int,
+        *,
+        name: str | None = None,
+        file_id: int | None = None,
+        field_keys: list[str] | None = None,
+        entity_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Find files on one record in a single request.
+
+        ``name`` matches ``original_name`` ignoring case and surrounding
+        spaces. ``file_id`` matches the file row id. ``field_keys`` limits
+        the attributes that are searched. Omit all three to list every live
+        file on the record.
+
+        Args:
+            record_id: Table-local id of the record that owns the files.
+            name: Display name to match, or ``None`` to ignore the name.
+            file_id: File row id to match, or ``None`` to ignore the id.
+            field_keys: Attribute keys to search. ``None`` searches every
+                file and folder attribute on the record.
+            entity_id: Table that owns ``record_id``; defaults to the active entity.
+
+        Returns:
+            Matching file dicts, usable with :meth:`open_file`.
+        """
+        kwargs: dict[str, Any] = {"entity_id": self._entity_id(entity_id)}
+        if name is not None and str(name).strip():
+            kwargs["name"] = str(name)
+        if file_id is not None:
+            kwargs["file_id"] = int(file_id)
+        if field_keys:
+            kwargs["field_keys"] = [str(key) for key in field_keys]
+        rows = (
+            self._invoke("find_record_files", [int(record_id)], **kwargs) or []
+        )
+        return [dict(row) for row in rows]
+
     def save_file_to_temp(self, file_row: dict[str, Any]) -> str:
-        """Download a file and save it under a temporary local path.
+        """Download a file to a new local path, streaming it to disk.
+
+        Every call downloads from the server. A previous local copy of the
+        same storage key is not reused. Use :meth:`download_file` when the
+        plugin needs the bytes in memory.
 
         Args:
             file_row: A file dict as returned by :meth:`list_files`.
 
         Returns:
-            Absolute path to the temporary file on the local filesystem.
+            Absolute path to the downloaded file.
         """
-        content = self.download_file(file_row)
-        return save_bytes_to_temp(content, suggested_name=file_display_name(file_row))
+        logical_key = str(file_row.get("file_path") or "")
+        if not logical_key:
+            raise ValueError("Missing file_path.")
+        label = file_display_name(file_row)
+        target = allocate_plugin_download(logical_key, label)
+
+        def _progress(current: int, total: int | None) -> None:
+            self._report_transfer(current, total, label)
+
+        try:
+            self._transport.download_to_file(
+                logical_key, target, on_progress=_progress
+            )
+        except Exception:
+            try:
+                if os.path.isfile(target) and os.path.getsize(target) == 0:
+                    os.remove(target)
+            except OSError:
+                pass
+            raise
+        return target
 
     def open_file(self, file_row: dict[str, Any]) -> str:
         """Download a file to a temp path and open it with the OS default app.
@@ -1095,9 +1281,13 @@ class PluginApi:
 
     def launch_script(
         self, relative_path: str, *, detached: bool = True, check_delay: float = 0.25
-    ) -> None:
-        """Launch a plugin Python script via the dedicated venv (external GUI)."""
-        launch_plugin_script(
+    ) -> int | None:
+        """Launch a plugin Python script via the dedicated venv (external GUI).
+
+        Returns:
+            PID of the child process, or ``None`` if it was not available.
+        """
+        return launch_plugin_script(
             plugin_id=self._context.plugin_id,
             plugin_root=self._context.plugin_root,
             relative_path=relative_path,

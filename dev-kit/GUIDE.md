@@ -331,6 +331,8 @@ See [examples/form_file_assist](examples/form_file_assist/).
 
 Each `PluginRecord` has `id` (table-local `#N`, not the global PK), `entity_id`, `display_label`, `data` (reference fields also store table-local target ids), `variant_key`, …
 
+Reference values are converted with the record's own subtype first, so a key shared by several subtypes gets the right type; keys left by a previous subtype are still converted. A single reference whose target row was purged is `None`; purged ids are dropped from a multi-reference list.
+
 Record ids throughout `PluginApi` / `PluginUi.highlight_records` are table-local.
 Pass `entity_id=` when the row belongs to a table other than the active one.
 
@@ -344,7 +346,7 @@ Read-only. Common calls:
 |----------|---------|
 | Records | `get_record`, `get_field`, `get_fields` |
 | Schema | `list_entity_defs`, `load_schema`, `entity_id_for_key`, `field_key_for_label` |
-| Files | `list_files`, `list_files_for_field_keys`, `list_files_for_records`, `download_file`, `download_bytes`, `save_file_to_temp`, `open_file`, `open_files`, `open_files_for_records` |
+| Files | `list_files`, `list_files_for_field_keys`, `list_files_for_records`, `find_files`, `download_file`, `download_bytes`, `save_file_to_temp`, `open_file`, `open_files`, `open_files_for_records` |
 | File lookup | `get_record_file_by_path` (resolve a stored path / `neurorehab-file:` key, including rich-text images) |
 | Folders | `folder_tree`, `list_folders`, `list_folders_for_field_keys`, `list_folders_for_records` |
 | References | `list_incoming_reference_records`, `list_outgoing_reference_records` |
@@ -354,7 +356,9 @@ Read-only. Common calls:
 Single- and **multi-reference** attribute values are included in incoming /
 outgoing graphs (a multi-reference may yield several targets for one field).
 
-`folder_tree`, `list_files`, and `list_folders` take the attribute **key**. Users see the label, so resolve it first. `folder_tree` is the same arborescence as the record panel: folders, subfolders, and the files inside each one. A file dict from that tree is read-only input for `open_file`, `save_file_to_temp`, or `download_file`.
+`folder_tree`, `list_files`, and `list_folders` take the attribute **key**. Users see the label, so resolve it first. `folder_tree` loads folders and files in one batch. It is the same arborescence as the record panel. A file dict from that tree is read-only input for `open_file`, `save_file_to_temp`, or `download_file`.
+
+`find_files(record_id, name="scan.dcm")` resolves a file in one request. `open_file` / `save_file_to_temp` always stream a new copy from the server to disk. A previous local file for the same storage key is not reused. `download_file` still returns the whole content in memory for plugins that parse it.
 
 ```python
 key = api.field_key_for_label("Données brutes")
@@ -375,7 +379,7 @@ The label match ignores case and surrounding spaces. If two subtypes share the l
 (max 50 per request) instead of looping `get_record` / `list_files` individually.
 The SDK keeps a **keep-alive** HTTP connection and reconnects on transient errors.
 
-**Forbidden:** write-like prefixes (`create_*`, `update_*`, `delete_*`, `set_*`, `store_*`, `save_*`, `apply_*`, `run_*`, `restore_*`, `provision_*`, `sync_*`, `install_*`, `upload_*`, `clear_*`, `purge_*`, `grant_*`, `revoke_*`, `touch_*`, `import_*`, `hard_*`, `duplicate_*`, `reorder_*`, `export_*`, `rename_*`, `copy_*`), team/account lookups (`list_app_users`, `list_team_member_combo_items`, `list_team_member_name_parts`, …), and automatic-action ops (`save_variant_automation_rules`, `list_automation_rule_history`, …) → `PluginWriteForbiddenError`. Spreadsheet subtype import and File/Folder **rename** are desktop-only: plugins cannot create subtypes or rows, nor rename stored files/folders. The server whitelist (`core/plugin/readonly_ops.py`, **24** read ops) is the final gate.
+**Forbidden:** write-like prefixes (`create_*`, `update_*`, `delete_*`, `set_*`, `store_*`, `save_*`, `apply_*`, `run_*`, `restore_*`, `provision_*`, `sync_*`, `install_*`, `upload_*`, `clear_*`, `purge_*`, `grant_*`, `revoke_*`, `touch_*`, `import_*`, `hard_*`, `duplicate_*`, `reorder_*`, `export_*`, `rename_*`, `copy_*`), team/account lookups (`list_app_users`, `list_team_member_combo_items`, `list_team_member_name_parts`, …), and automatic-action ops (`save_variant_automation_rules`, `list_automation_rule_history`, …) → `PluginWriteForbiddenError`. Spreadsheet subtype import and File/Folder **rename** are desktop-only: plugins cannot create subtypes or rows, nor rename stored files/folders. The server whitelist (`core/plugin/readonly_ops.py`, **25** read ops) is the final gate.
 
 Linked records (references in both directions) are readable when tied to the
 selection. See [examples/outgoing_references/](examples/outgoing_references/).

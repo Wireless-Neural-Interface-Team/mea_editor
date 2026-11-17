@@ -683,8 +683,26 @@ class PluginWorkerRuntime:
         """
         if self._session_api is not None:
             self._session_api.close()
-        self._session_api = self._api(base_url, token, context_payload)
+        api = self._api(base_url, token, context_payload)
+        api.set_transfer_progress_callback(self._emit_transfer_progress)
+        self._session_api = api
         return self._session_api
+
+    def _emit_transfer_progress(
+        self,
+        current: int,
+        total: int | None,
+        label: str,
+    ) -> None:
+        """Forward a streamed download's byte counts to the host activity card."""
+        self._ui._emit(
+            "transfer_progress",
+            {
+                "current": int(current),
+                "total": None if total is None else int(total),
+                "label": str(label or ""),
+            },
+        )
 
     def _clear_session_api(self) -> None:
         """Close and clear the currently active session API, if any."""

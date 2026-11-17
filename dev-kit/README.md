@@ -8,7 +8,14 @@ then edit the files here. Do **not** keep a nested `dev-kit/` subdirectory — S
 scripts, `plugin.toml`, and `main.py` all live at this folder’s root. After
 `prepare-publish`, import `publish/` into the database.
 
-**Kit — 2026-11-11** — aligned with NeuroRehab client **1.1.0** / server **1.1.0**.
+**Kit — 2026-11-17** — aligned with NeuroRehab client **1.1.2** / server **1.1.2**.
+Reference values in `record.data` are converted with the record's own subtype
+first (keys shared by several subtypes are converted once); a single reference
+to a purged row is `None`. Related-row lookup is a server index (`entity_record_reference`); the plugin
+API is unchanged. `open_file` / `save_file_to_temp` always download a new local file.
+A previous copy of the same storage key is not reused.
+`find_files` looks up a file in one request. `folder_tree` and the
+multi-field list helpers use one batched call.
 Rich-text images live on the NAS (`file_kind=rich_image`); File attributes
 can show image thumbnails. Schema UX: defaults, uniqueness rules, Combo
 fields, column filters, broader type migration, Manage actions, and an
@@ -33,7 +40,7 @@ migration** (Text/Number/Date/Time/Boolean + lists ↔ text/number) when all
 values convert.
 Reference Display fields may include Specific-subtype attributes when the
 reference is subtype-restricted. Plugins stay **read-only** end-to-end (SDK +
-server whitelist of **24** ops; no purge/CRUD/team writes). Worker subprocess stdin
+server whitelist of **25** ops; no purge/CRUD/team writes). Worker subprocess stdin
 guard — omitted stdin → `DEVNULL`, `plugin_popen` / `plugin_run`; plugin
 **package versioning**: required `version` in `plugin.toml`, side-by-side
 `id@version` installs; host stays interactive during plugin IPC — see GUIDE

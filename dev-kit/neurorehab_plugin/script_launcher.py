@@ -355,7 +355,7 @@ def launch_plugin_script(
     plugin_python: Path | None = None,
     detached: bool = True,
     check_delay: float = 0,
-) -> None:
+) -> int | None:
     """Launch a plugin Python script with the plugin venv interpreter.
 
     Starts ``relative_path`` (resolved and validated to stay inside
@@ -394,6 +394,9 @@ def launch_plugin_script(
         ValueError: If the script path escapes ``plugin_root``.
         RuntimeError: If the script exits with a non-zero code within
             ``check_delay`` seconds.
+
+    Returns:
+        PID of the child process, or ``None`` if it was not available.
     """
     root = plugin_root.resolve()
     python_exe = _resolve_python(root, plugin_id, plugin_python)
@@ -464,3 +467,7 @@ def launch_plugin_script(
                 break
             time.sleep(min(0.05, deadline - time.monotonic()))
     _rotate_launch_logs(root, log_path)
+    try:
+        return int(process.pid)
+    except (TypeError, ValueError):
+        return None

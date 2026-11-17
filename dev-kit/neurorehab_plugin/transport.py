@@ -13,14 +13,18 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import posixpath
 import ssl
 import threading
 import urllib.parse
-from typing import Any
+from typing import Any, Callable
 
 from neurorehab_plugin.errors import PluginApiError, PluginWriteForbiddenError
 from neurorehab_plugin.local_files import pump_gui_events
+
+_TRANSFER_CHUNK_SIZE = 4 * 1024 * 1024
+_PARTIAL_SUFFIX = ".nr-partial"
 
 _TRANSIENT_HTTP_ERRORS = (
     ConnectionError,
@@ -129,11 +133,8 @@ class PluginTransport:
                 ``/api/v1/plugin/`` prefix.
             PluginApiError: If the server responds with an HTTP status >= 400.
         """
-        if not posixpath.normpath(path).startswith("/api/v1/plugin/"):
-            raise PluginWriteForbiddenError(
-                "Plugin SDK can only access /api/v1/plugin/* routes."
-            )
         url_path = path if path.startswith("/") else f"/{path}"
+        self._assert_plugin_path(url_path)
         headers = {
             "Accept": "application/json",
             "User-Agent": "NeuroRehab-database-PluginSDK/1.0",
@@ -217,3 +218,171 @@ class PluginTransport:
             logical_key.replace("\\", "/").strip("/"), safe="/"
         )
         return self.request("GET", f"/api/v1/plugin/storage/{encoded}")
+
+    def download_to_file(
+        self,
+        logical_key: str,
+        target_path: str,
+        *,
+        on_progress: Callable[[int, int | None], None] | None = None,
+        timeout: int = 3600,
+    ) -> None:
+        """Stream a stored file to ``target_path`` without holding it in memory.
+
+        Uses a dedicated connection (not the keep-alive JSON connection) and
+        writes 4 MiB chunks to a ``.nr-partial`` sibling, then renames it into
+        place. An existing partial is resumed with ``Range`` when the server
+        accepts it.
+
+        Args:
+            logical_key: Storage-relative path identifying the file.
+            target_path: Local path that receives the completed file.
+            on_progress: Optional ``(downloaded, total)`` callback. ``total``
+                is ``None`` when the server omits ``Content-Length``.
+            timeout: Socket timeout in seconds.
+
+        Raises:
+            PluginWriteForbiddenError: If the storage URL would leave
+                ``/api/v1/plugin/``.
+            PluginApiError: If the server responds with an HTTP status >= 400.
+        """
+        encoded = urllib.parse.quote(
+            logical_key.replace("\\", "/").strip("/"), safe="/"
+        )
+        path = f"/api/v1/plugin/storage/{encoded}"
+        self._assert_plugin_path(path)
+        parent = os.path.dirname(target_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        try:
+            self._download_to_file_once(
+                path,
+                target_path,
+                on_progress=on_progress,
+                timeout=timeout,
+                resume=True,
+            )
+        except _RestartDownloadWithoutResume:
+            self._download_to_file_once(
+                path,
+                target_path,
+                on_progress=on_progress,
+                timeout=timeout,
+                resume=False,
+            )
+
+    def _assert_plugin_path(self, path: str) -> None:
+        if not posixpath.normpath(path).startswith("/api/v1/plugin/"):
+            raise PluginWriteForbiddenError(
+                "Plugin SDK can only access /api/v1/plugin/* routes."
+            )
+
+    def _download_to_file_once(
+        self,
+        path: str,
+        target_path: str,
+        *,
+        on_progress: Callable[[int, int | None], None] | None,
+        timeout: int,
+        resume: bool,
+    ) -> None:
+        partial_path = f"{target_path}{_PARTIAL_SUFFIX}"
+        existing = 0
+        if resume and os.path.isfile(partial_path):
+            try:
+                existing = os.path.getsize(partial_path)
+            except OSError:
+                existing = 0
+
+        conn = self._open_connection()
+        completed = False
+        try:
+            conn.timeout = timeout
+            conn.putrequest("GET", path)
+            conn.putheader("Accept", "application/octet-stream, */*")
+            conn.putheader("User-Agent", "NeuroRehab-database-PluginSDK/1.0")
+            conn.putheader("Connection", "close")
+            if self.access_token:
+                conn.putheader("Authorization", f"Bearer {self.access_token}")
+            if self.plugin_id:
+                conn.putheader("X-NR-Plugin-Id", self.plugin_id)
+            if existing > 0:
+                conn.putheader("Range", f"bytes={existing}-")
+            conn.endheaders()
+            response = conn.getresponse()
+            if response.status >= 400:
+                detail = response.read().decode("utf-8", errors="replace")
+                if existing > 0 and response.status in {416, 400, 501}:
+                    try:
+                        os.remove(partial_path)
+                    except OSError:
+                        pass
+                    raise _RestartDownloadWithoutResume()
+                message = _http_error_message(detail, response.reason)
+                raise PluginApiError(f"API {response.status}: {message}")
+
+            append_mode = response.status == 206 and existing > 0
+            if existing > 0 and response.status == 200:
+                existing = 0
+                append_mode = False
+
+            total_size = _response_total_size(
+                response,
+                existing=existing if append_mode else 0,
+            )
+            downloaded = existing if append_mode else 0
+            if on_progress is not None:
+                on_progress(downloaded, total_size)
+            mode = "ab" if append_mode else "wb"
+            with open(partial_path, mode) as handle:
+                while True:
+                    chunk = response.read(_TRANSFER_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    downloaded += len(chunk)
+                    if on_progress is not None:
+                        on_progress(downloaded, total_size)
+                    pump_gui_events()
+            os.replace(partial_path, target_path)
+            completed = True
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            if not completed and os.path.isfile(partial_path):
+                try:
+                    if os.path.getsize(partial_path) == 0:
+                        os.remove(partial_path)
+                except OSError:
+                    pass
+
+
+class _RestartDownloadWithoutResume(Exception):
+    """Range resume was rejected; the caller retries from byte 0."""
+
+
+def _http_error_message(detail: str, reason: str) -> str:
+    try:
+        parsed = json.loads(detail)
+        message = parsed.get("detail") or parsed.get("message") or detail
+    except (TypeError, ValueError):
+        message = detail or reason
+    return str(message or reason or "Request failed")
+
+
+def _response_total_size(response: Any, *, existing: int) -> int | None:
+    content_range = response.getheader("Content-Range")
+    content_length = response.getheader("Content-Length")
+    if content_range and "/" in str(content_range):
+        try:
+            return int(str(content_range).rsplit("/", 1)[-1])
+        except ValueError:
+            return None
+    if content_length:
+        try:
+            return int(content_length) + max(0, int(existing))
+        except ValueError:
+            return None
+    return None

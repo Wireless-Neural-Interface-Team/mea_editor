@@ -2,15 +2,85 @@
 
 | Component | Version |
 |-----------|---------|
-| Kit stamp (`VERSION`) | **2026-11-11** |
-| Client version (`CLIENT_VERSION`) | **1.1.0** |
-| Server version (`SERVER_VERSION`) | **1.1.0** |
+| Kit stamp (`VERSION`) | **2026-11-17** |
+| Client version (`CLIENT_VERSION`) | **1.1.2** |
+| Server version (`SERVER_VERSION`) | **1.1.2** |
 | Python (dev + client + plugin venvs) | **3.11.7** |
 | `PLUGIN_API_VERSION` / `api_version` in `plugin.toml` | **1** |
 | Package `version` in `plugin.toml` | **required on upload** (`MAJOR.MINOR.PATCH`) |
 | PySide6 in client | 6.11.x |
 | Default API port (NAS) | **32772** |
 | Kit zip on NAS storage | `assets/dev-kit.zip` |
+
+## 2026-11-17 — Version **1.1.2** (reference conversion, Related rows refresh)
+
+- `CLIENT_VERSION` **1.1.2** and `SERVER_VERSION` **1.1.2**. The reference
+  conversion below runs on the desktop host and in `/plugin/invoke` results,
+  so redeploy the server image before publishing the client
+  (`min_server_version` **1.1.2**).
+- Reference values in `record.data`: the record's own subtype is read first,
+  then the other subtypes as a fallback (keys left by a previous subtype are
+  still converted). Each key is converted once, so a key shared by several
+  subtypes (for example `mapping` on three MEA subtypes) no longer returns a
+  wrong local id.
+- Purge: a single reference whose target row was permanently deleted is
+  `None` for plugins instead of the raw global id (purge only scrubs keys of
+  the record's current subtype). Purged ids were already dropped from
+  multi-reference lists.
+- Related rows stay on screen during background refreshes and repaint only
+  when the rows changed.
+- SDK unchanged (`PLUGIN_API_VERSION` **1**). Kit stamp refreshed.
+
+## 2026-11-17 — Version **1.1.1** (cleanup, journal purge)
+
+- `CLIENT_VERSION` **1.1.1** and `SERVER_VERSION` **1.1.1** (both bumped:
+  plugin file streaming / `find_record_files` is now the stamped server
+  contract, and retention purge deletes automatic-action journal rows whose
+  source row is gone). `min_server_version` is **1.1.1**. Redeploy the
+  server image before publishing the client.
+- Retention **purge** removes `automation_execution_log` rows after the
+  source row is hard-deleted (daily purge, Home purge, and Empty trash for
+  that table). Preview and Home/audit `PURGE` details include
+  `automation_journal`. Journal rows for rows that still exist stay.
+  Audit log and revision snapshots stay permanent. Catalogue plugins are
+  still not removed by purge.
+- Related rows use `entity_record_reference` (filled from the JSON on
+  write). Purge drops outgoing index rows with the source record, rebuilds
+  them when dangling references are scrubbed, and deletes index rows for a
+  reference attribute when that attribute or its subtype is hard-purged.
+  The index is not a separate Home counter.
+- Dead helpers removed: unused plugin download-cache reuse
+  (`cached_plugin_download`, `plugin_download_target`, `save_bytes_to_temp`),
+  unused UI/policy/schema helpers (`get_ui_theme`, `tab_page_help_bar`,
+  `run_with_upload_feedback`, `plugin_needs_venv`, `record_id_sort_labels`,
+  `require_any_permission`, `validate_pg_identifier`,
+  `configured_default_value`, `read_local_install_manifest`,
+  `rich_text_data_needs_image_persist`, download-by-type menu builder and
+  the unused file/folder field probe), and host copies of worker-local
+  plugin dialogs (`show_message`, `open_window`, `run_task`, CSV export).
+  Each `open_file` / `save_file_to_temp` still downloads a new local file.
+  The plugin SDK surface is unchanged (`PLUGIN_API_VERSION` **1**).
+- Docs, build notes, and `scripts/publish_client_release.py` aligned on
+  **1.1.1**. Kit stamp refreshed; SDK re-synced.
+
+## 2026-11-16 — Plugin file access (same speed as manual open)
+
+- `open_file` / `save_file_to_temp` stream the file to disk in 4 MiB chunks
+  on a dedicated connection, with `Range` resume. They no longer load the
+  whole body into memory. `download_file` / `download_bytes` stay the
+  in-memory path for plugins that parse content.
+- Each `open_file` / `save_file_to_temp` downloads a new local file.
+  A previous copy of the same storage key is not reused.
+- While a plugin streams a file, the activity card shows byte progress.
+- `find_files(record_id, name=…, file_id=…, field_keys=…)` looks up files
+  on one record in a single invoke (`find_record_files`). Server whitelist
+  is **25** read ops. `PLUGIN_API_VERSION` stays **1**.
+- `folder_tree` and the multi-field / multi-record list helpers send one
+  batched request instead of one call per field.
+- A manual plugin **Run** reuses the plugin session token while the
+  selection is unchanged.
+- `CLIENT_VERSION` / `SERVER_VERSION` stay **1.1.0**. Kit stamp refreshed;
+  SDK re-synced.
 
 ## 2026-11-11 — Version **1.1.0** (rich text images, schema UX)
 
