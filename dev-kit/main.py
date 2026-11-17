@@ -1,6 +1,7 @@
 """NeuroRehab plugin: open Mapping JSON files in the local MEA editor.
 
-Buttons live in the plugin panel on the Mapping and Components tables.
+Buttons live in the plugin panel on the Mapping table and in the
+Information panel on the Components table.
 The editor process is the standalone MEA editor. It loads a local copy of
 the database file and saves on disk only.
 """
@@ -19,7 +20,7 @@ from typing import Any
 from neurorehab_plugin.api import PluginApi
 from neurorehab_plugin.context import PluginContext, PluginRecord
 from neurorehab_plugin.local_files import file_display_name
-from neurorehab_plugin.ui import ZONE_PLUGIN_PANEL, PluginUi
+from neurorehab_plugin.ui import ZONE_PLUGIN_PANEL, ZONE_RECORD_PANEL, PluginUi
 
 JSON_FILE_LABEL = "JSON mapping file"
 MAPPING_REFERENCE_LABEL = "Mapping"
@@ -51,7 +52,7 @@ _MEA_SUBTYPES = frozenset(
 
 
 def build_ui(api: PluginApi, context: PluginContext, ui: PluginUi) -> None:
-    """Add plugin-panel buttons for the Mapping and Components tables."""
+    """Add buttons: plugin panel on Mapping, Information panel on MEA Components."""
     kind = _table_kind(context)
     if kind is None:
         return
@@ -61,20 +62,24 @@ def build_ui(api: PluginApi, context: PluginContext, ui: PluginUi) -> None:
     if kind == "mapping":
         can_open = selected is not None
         callback = lambda record=selected: _open_mapping_row(api, context, ui, record)
+        zone = ZONE_PLUGIN_PANEL
     else:
-        can_open = selected is not None and _is_mea_subtype(selected)
+        if selected is None or not _is_mea_subtype(selected):
+            return
+        can_open = True
         callback = lambda record=selected: _open_component_mapping(api, context, ui, record)
+        zone = ZONE_RECORD_PANEL
 
     ui.add_button(
         "View mapping",
         callback,
-        zone=ZONE_PLUGIN_PANEL,
+        zone=zone,
         enabled=can_open,
     )
     ui.add_button(
         "Open MEA Mapping Editor",
         lambda: _launch_editor(api, context, ui, None),
-        zone=ZONE_PLUGIN_PANEL,
+        zone=zone,
         new_row=False,
     )
 
@@ -170,7 +175,7 @@ def _finish_open(
     if error or not path:
         if shown["path"]:
             return
-        message = error or "No JSON mapping file on this row."
+        message = error or "Mapping file not found"
         _write_command(root / VIEWER_COMMAND_NAME, token, "", message)
         return
     deliver(path)
@@ -206,16 +211,20 @@ def _ensure_editor(api: PluginApi, context: PluginContext, ui: PluginUi) -> str:
         return str(session["token"])
     pending = str(_PENDING_VIEWER.get("token") or "")
     started = float(_PENDING_VIEWER.get("at") or 0.0)
-    if pending and (time.monotonic() - started) < _EDITOR_BOOT_S:
+    pending_pid = _PENDING_VIEWER.get("pid")
+    booting = pending_pid is None or _pid_alive(int(pending_pid))
+    if pending and booting and (time.monotonic() - started) < _EDITOR_BOOT_S:
         return pending
+    _PENDING_VIEWER.clear()
     token = uuid.uuid4().hex
     (root / OPEN_REQUEST_NAME).write_text(
         json.dumps({"path": None, "token": token, "view_only": True}),
         encoding="utf-8",
     )
-    api.launch_script(EDITOR_SCRIPT, detached=True, check_delay=0)
+    pid = api.launch_script(EDITOR_SCRIPT, detached=True, check_delay=0)
     _PENDING_VIEWER["token"] = token
     _PENDING_VIEWER["at"] = time.monotonic()
+    _PENDING_VIEWER["pid"] = pid if isinstance(pid, int) else None
     return token
 
 
@@ -498,7 +507,7 @@ def _file_identity(file_row: dict[str, Any]) -> str:
 def _pick_json_file(files: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, str | None]:
     """Choose the single JSON attached to the file attribute."""
     if not files:
-        return None, "No file is attached to JSON mapping file."
+        return None, "Mapping file not found"
     json_files = [
         row for row in files if file_display_name(row).lower().endswith(".json")
     ]
